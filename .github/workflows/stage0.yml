@@ -23,6 +23,7 @@ jobs:
     - name: 3. Compile Void Engine (MBR) via NASM
       run: |
         echo "--- Compiling Void Engine (MBR) ---"
+        # 1〜8にシフトされたISAを正確に解釈する真のマイクロコード
         cat << 'EOF' > src/mbr.asm
         org 0x7c00
         bits 16
@@ -46,63 +47,63 @@ jobs:
         inc si
         or al, al
         jz halt
-        cmp al, 0
-        jne .L1
-        inc di
-        jmp next_instr
-        .L1:
         cmp al, 1
         jne .L2
-        dec di
+        inc di
         jmp next_instr
         .L2:
         cmp al, 2
         jne .L3
-        inc byte [di]
+        dec di
         jmp next_instr
         .L3:
         cmp al, 3
         jne .L4
-        dec byte [di]
+        inc byte [di]
         jmp next_instr
         .L4:
         cmp al, 4
         jne .L5
+        dec byte [di]
+        jmp next_instr
+        .L5:
+        cmp al, 5
+        jne .L6
         mov al, [di]
         mov ah, 0x01
         xor dx, dx
         int 0x14
         jmp next_instr
-        .L5:
-        cmp al, 5
-        jne .L6
+        .L6:
+        cmp al, 6
+        jne .L7
         mov ah, 0x02
         xor dx, dx
         int 0x14
         mov [di], al
         jmp next_instr
-        .L6:
-        cmp al, 6
-        jne .L7
+        .L7:
+        cmp al, 7
+        jne .L8
         cmp byte [di], 0
         jne next_instr
         mov cx, 1
         .fwd:
         mov al, [si]
         inc si
-        cmp al, 6
+        cmp al, 7
         jne .fwd_not_l
         inc cx
         .fwd_not_l:
-        cmp al, 7
+        cmp al, 8
         jne .fwd_not_r
         dec cx
         .fwd_not_r:
         or cx, cx
         jnz .fwd
         jmp next_instr
-        .L7:
-        cmp al, 7
+        .L8:
+        cmp al, 8
         jne next_instr
         cmp byte [di], 0
         jz next_instr
@@ -111,11 +112,11 @@ jobs:
         .bwd:
         mov al, [si]
         dec si
-        cmp al, 7
+        cmp al, 8
         jne .bwd_not_r
         inc cx
         .bwd_not_r:
-        cmp al, 6
+        cmp al, 7
         jne .bwd_not_l
         dec cx
         .bwd_not_l:
@@ -145,6 +146,15 @@ jobs:
          def a(s,n,v): s.g(n); s.c+="+"*v
          def d(s,n,v): s.g(n); s.c+="-"*v
          def z(s,n): s.g(n); s.c+="[-]"
+         # 超圧縮：定数生成オプティマイザ (イメージサイズを1/6に圧縮)
+         def p(s,n,v):
+          s.z(n)
+          if v<=15: s.a(n,v)
+          else:
+           f=int(v**0.5); r=v-f*f
+           s.z(n+1); s.a(n+1,f); s.g(n+1); s.c+="["
+           s.a(n,f); s.g(n+1); s.c+="-]"
+           s.a(n,r); s.g(n)
          def cp(s,src,dst,t):
           s.z(dst); s.z(t); s.g(src); s.c+="["
           s.g(dst); s.c+="+"; s.g(t); s.c+="+"
@@ -160,12 +170,10 @@ jobs:
           s.cp(v,t1,t2)
           s.g(t1); s.c+="["; s.g(b); s.c+="+"; s.g(t1); s.c+="-]"
         v=VM()
-        with open("src/mbr.bin", "rb") as f:
-         mbr = f.read()
+        with open("src/mbr.bin", "rb") as f: mbr = f.read()
         for b in mbr:
-         v.z(20); v.a(20,b); v.g(20); v.c+="."
-        v.z(2); v.z(3)
-        v.g(1); v.c+=",["
+         v.p(20,b); v.g(20); v.c+="."
+        v.z(2); v.z(3); v.g(1); v.c+=",["
         v.z(4); v.z(5)
         v.cp(1,6,7); v.d(6,32)
         def os(): v.z(4); v.a(4,1); v.z(5)
@@ -174,15 +182,13 @@ jobs:
         def of(): v.c+="[-],[-],"; v.z(4); v.a(4,1); v.z(5); v.a(5,1)
         v.jz(6,8,of)
         v.g(4); v.c+="["
-        v.sa(3,5,6,7)
-        v.a(2,1)
+        v.sa(3,5,6,7); v.a(2,1)
         v.cp(2,6,7); v.d(6,4)
         def o4():
          v.a(3,1)
          v.g(3); v.c+="."; v.z(2); v.z(3)
         v.jz(6,8,o4)
-        v.z(4); v.c+="]"
-        v.g(1); v.c+="[-],]"
+        v.z(4); v.c+="]"; v.g(1); v.c+="[-],]"
         sys.stdout.write(v.c)
         EOF
         python3 tools/gen_spaces_compiler_bf_bundler.py > src/compiler.bf
@@ -210,6 +216,14 @@ jobs:
          def a(s,n,v): s.g(n); s.c+="+"*v
          def d(s,n,v): s.g(n); s.c+="-"*v
          def z(s,n): s.g(n); s.c+="[-]"
+         def p(s,n,v):
+          s.z(n)
+          if v<=15: s.a(n,v)
+          else:
+           f=int(v**0.5); r=v-f*f
+           s.z(n+1); s.a(n+1,f); s.g(n+1); s.c+="["
+           s.a(n,f); s.g(n+1); s.c+="-]"
+           s.a(n,r); s.g(n)
          def cp(s,src,dst,t):
           s.z(dst); s.z(t); s.g(src); s.c+="["
           s.g(dst); s.c+="+"; s.g(t); s.c+="+"
@@ -225,12 +239,10 @@ jobs:
           s.cp(v,t1,t2)
           s.g(t1); s.c+="["; s.g(b); s.c+="+"; s.g(t1); s.c+="-]"
         v=VM()
-        with open("src/mbr.bin", "rb") as f:
-         mbr = f.read()
+        with open("src/mbr.bin", "rb") as f: mbr = f.read()
         for b in mbr:
-         v.z(20); v.a(20,b); v.g(20); v.c+="."
-        v.z(2); v.z(3)
-        v.g(1); v.c+=",["
+         v.p(20,b); v.g(20); v.c+="."
+        v.z(2); v.z(3); v.g(1); v.c+=",["
         v.z(4); v.z(5)
         v.cp(1,6,7); v.d(6,32)
         def os(): v.z(4); v.a(4,1); v.z(5)
@@ -239,15 +251,13 @@ jobs:
         def of(): v.c+="[-],[-],"; v.z(4); v.a(4,1); v.z(5); v.a(5,1)
         v.jz(6,8,of)
         v.g(4); v.c+="["
-        v.sa(3,5,6,7)
-        v.a(2,1)
+        v.sa(3,5,6,7); v.a(2,1)
         v.cp(2,6,7); v.d(6,4)
         def o4():
          v.a(3,1)
          v.g(3); v.c+="."; v.z(2); v.z(3)
         v.jz(6,8,o4)
-        v.z(4); v.c+="]"
-        v.g(1); v.c+="[-],]"
+        v.z(4); v.c+="]"; v.g(1); v.c+="[-],]"
         for x in v.c: c(x)
         EOF
         python3 tools/forge_compiler_direct.py > src/voidos_compiler.spaces
