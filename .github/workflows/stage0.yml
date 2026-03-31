@@ -25,21 +25,15 @@ jobs:
         echo "--- Forging Spaces v2.0 Meta-Compiler ---"
         python3 tools/gen_spaces_compiler_bf_bundler.py > src/compiler.bf
         python3 tools/bf_to_spaces.py src/compiler.bf > src/compiler.spaces
+        # 今後、コンパイラ自体の生成系も直出力に移行する足掛かりとして
+        # まずはカーネル生成系から .bf を完全排除します。
 
-    - name: 4. Write Pure Spaces Kernel
+    - name: 4. Forge Pure Spaces Kernel (No Brainfuck Middleman)
       run: |
-        echo "--- Writing OS Kernel in Pure Spaces ---"
-        # ハードウェア(COM1)に直接 "VOID" を出力するベアメタルカーネル
-        # V (86), O (79), I (73), D (68)
-        cat << 'EOF' > src/kernel.bf
-        ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++.
-        -------.
-        ------.
-        -----.
-        EOF
-        # カーネルを完全な空白文字言語に変換
-        python3 tools/bf_to_spaces.py src/kernel.bf > src/kernel.spaces
-        echo "✅ Pure Spaces Kernel Written."
+        echo "--- Writing OS Kernel directly to Spaces ---"
+        # BFファイルを一切介さず、Pythonから直接カーネル(Spaces)を生成
+        python3 tools/forge_kernel.py > src/kernel.spaces
+        echo "✅ Pure Spaces Kernel Written directly."
 
     - name: 5. Bootstrap OS Image
       run: |
