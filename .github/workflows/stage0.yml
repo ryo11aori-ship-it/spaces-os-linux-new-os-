@@ -70,7 +70,7 @@ jobs:
           return o
 
         v=VM(); a=Asm()
-        # 究極のハック：1980年代のBIOSの呪い(63セクタの壁)を回避するため、安全な48セクタ(0x30)のCHS読み込みに変更！
+        # MBR生成ロジック：48セクタ(0x30)読み込み
         a.i(0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xBC, 0x00, 0x7C)
         a.i(0xB4, 0x02, 0xB0, 0x30, 0xB5, 0x00, 0xB1, 0x02, 0xB6, 0x00, 0xBB, 0x00, 0x7E, 0xCD, 0x13)
         a.i(0xB4, 0x00, 0xB0, 0xE3, 0x31, 0xD2, 0xCD, 0x14)
@@ -125,9 +125,112 @@ jobs:
     - name: 4. Forge VoidOS Native Compiler (No Brainfuck Middleman)
       run: |
         echo "--- Writing OS Compiler directly to Spaces ---"
-        cp tools/gen_spaces_compiler_bf_bundler.py tools/forge_compiler_direct.py
-        sed -i 's/sys.stdout.write(v.c)/for x in v.c: c(x)/g' tools/forge_compiler_direct.py
-        sed -i '1i def o(v):\n sys.stdout.write("\\u3000" if (v>>3)&1 else " ")\n sys.stdout.write("\\u3000" if (v>>2)&1 else " ")\n sys.stdout.write("\\u3000" if (v>>1)&1 else " ")\n sys.stdout.write("\\u3000" if v&1 else " ")\ndef c(op):\n m={">":0,"<":1,"+":2,"-":3,".":4,",":5,"[":6,"]":7}\n if op in m: o(m[op])' tools/forge_compiler_direct.py
+        # 完全に独立したジェネレータ（sedハックを廃止し、綺麗なPythonコードでSpacesを直接生成）
+        cat << 'EOF' > tools/forge_compiler_direct.py
+        import sys
+        def o(v):
+         sys.stdout.write("\u3000" if (v>>3)&1 else " ")
+         sys.stdout.write("\u3000" if (v>>2)&1 else " ")
+         sys.stdout.write("\u3000" if (v>>1)&1 else " ")
+         sys.stdout.write("\u3000" if v&1 else " ")
+        def c(op):
+         m={'>':0,'<':1,'+':2,'-':3,'.':4,',':5,'[':6,']':7}
+         if op in m: o(m[op])
+
+        class VM:
+         def __init__(s): s.c=""; s.p=0
+         def g(s,n):
+          if n>s.p: s.c+=">"*(n-s.p)
+          elif n<s.p: s.c+="<"*(s.p-n)
+          s.p=n
+         def a(s,n,v): s.g(n); s.c+="+"*v
+         def d(s,n,v): s.g(n); s.c+="-"*v
+         def z(s,n): s.g(n); s.c+="[-]"
+         def opt(s,n,v):
+          s.z(n)
+          if v<=15: s.a(n,v)
+          else:
+           f=int(v**0.5); r=v-f*f
+           s.z(n+1); s.a(n+1,f); s.g(n+1); s.c+="["
+           s.a(n,f); s.g(n+1); s.c+="-]"
+           s.a(n,r); s.g(n)
+         def cp(s,src,dst,t):
+          s.z(dst); s.z(t); s.g(src); s.c+="["
+          s.g(dst); s.c+="+"; s.g(t); s.c+="+"
+          s.g(src); s.c+="-]"; s.g(t); s.c+="["
+          s.g(src); s.c+="+"; s.g(t); s.c+="-]"
+         def jz(s,v,f,cb):
+          s.z(f); s.a(f,1); s.g(v); s.c+="["
+          s.z(f); s.z(v); s.c+="]"; s.g(f); s.c+="["
+          cb(); s.z(f); s.c+="]"
+         def sa(s,b,v,t1,t2):
+          s.z(t1); s.g(b); s.c+="["; s.g(t1); s.c+="+"; s.g(b); s.c+="-]"
+          s.g(t1); s.c+="["; s.g(b); s.c+="++"; s.g(t1); s.c+="-]"
+          s.cp(v,t1,t2)
+          s.g(t1); s.c+="["; s.g(b); s.c+="+"; s.g(t1); s.c+="-]"
+
+        class Asm:
+         def __init__(s): s.c=[]; s.l={}
+         def lbl(s,n): s.l[n]=len(s.c)
+         def i(s,*b): s.c.extend(b)
+         def j(s,op,lbl): s.c.extend([op, lbl])
+         def build(s):
+          o=[]
+          for k,x in enumerate(s.c):
+           if type(x)==str: o.append((s.l[x]-(k+1))&0xFF)
+           else: o.append(x)
+          return o
+
+        v=VM(); a=Asm()
+        a.i(0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xBC, 0x00, 0x7C)
+        a.i(0xB4, 0x02, 0xB0, 0x30, 0xB5, 0x00, 0xB1, 0x02, 0xB6, 0x00, 0xBB, 0x00, 0x7E, 0xCD, 0x13)
+        a.i(0xB4, 0x00, 0xB0, 0xE3, 0x31, 0xD2, 0xCD, 0x14)
+        a.i(0xBE, 0x00, 0x7E, 0xBF, 0x00, 0x10)
+        a.lbl('next')
+        a.i(0x8A, 0x04, 0x46, 0x08, 0xC0); a.j(0x74, 'halt')
+        a.i(0x3C, 0x01); a.j(0x75, 'L2'); a.i(0x47); a.j(0xEB, 'next'); a.lbl('L2')
+        a.i(0x3C, 0x02); a.j(0x75, 'L3'); a.i(0x4F); a.j(0xEB, 'next'); a.lbl('L3')
+        a.i(0x3C, 0x03); a.j(0x75, 'L4'); a.i(0xFE, 0x05); a.j(0xEB, 'next'); a.lbl('L4')
+        a.i(0x3C, 0x04); a.j(0x75, 'L5'); a.i(0xFE, 0x0D); a.j(0xEB, 'next'); a.lbl('L5')
+        a.i(0x3C, 0x05); a.j(0x75, 'L6'); a.i(0x8A, 0x05, 0xB4, 0x01, 0x31, 0xD2, 0xCD, 0x14); a.j(0xEB, 'next'); a.lbl('L6')
+        a.i(0x3C, 0x06); a.j(0x75, 'L7'); a.i(0xB4, 0x02, 0x31, 0xD2, 0xCD, 0x14, 0x88, 0x05); a.j(0xEB, 'next'); a.lbl('L7')
+        a.i(0x3C, 0x07); a.j(0x75, 'L8'); a.i(0x80, 0x3D, 0x00); a.j(0x75, 'next')
+        a.i(0xB9, 0x01, 0x00); a.lbl('fwd')
+        a.i(0x8A, 0x04, 0x46, 0x3C, 0x07); a.j(0x75, 'fwd1'); a.i(0x41); a.lbl('fwd1')
+        a.i(0x3C, 0x08); a.j(0x75, 'fwd2'); a.i(0x49); a.lbl('fwd2')
+        a.i(0x09, 0xC9); a.j(0x75, 'fwd'); a.j(0xEB, 'next'); a.lbl('L8')
+        a.i(0x3C, 0x08); a.j(0x75, 'next'); a.i(0x80, 0x3D, 0x00); a.j(0x74, 'next')
+        a.i(0xB9, 0x01, 0x00, 0x83, 0xEE, 0x02); a.lbl('bwd')
+        a.i(0x8A, 0x04, 0x4E, 0x3C, 0x08); a.j(0x75, 'bwd1'); a.i(0x41); a.lbl('bwd1')
+        a.i(0x3C, 0x07); a.j(0x75, 'bwd2'); a.i(0x49); a.lbl('bwd2')
+        a.i(0x09, 0xC9); a.j(0x75, 'bwd'); a.i(0x83, 0xC6, 0x02); a.j(0xEB, 'next')
+        a.lbl('halt'); a.i(0xF4); a.j(0xEB, 'halt')
+
+        bin = a.build()
+        for b in bin: v.opt(20, b); v.g(20); v.c+="."
+        while len(bin) < 510: v.opt(20, 0); v.g(20); v.c+="."; bin.append(0)
+        v.opt(20, 0x55); v.g(20); v.c+="."
+        v.opt(20, 0xAA); v.g(20); v.c+="."
+
+        v.z(2); v.z(3); v.g(1); v.c+=",["
+        v.z(4); v.z(5)
+        v.cp(1,6,7); v.d(6,32)
+        def os(): v.z(4); v.a(4,1); v.z(5)
+        v.jz(6,8,os)
+        v.cp(1,6,7); v.d(6,227)
+        def of(): v.c+="[-],[-],"; v.z(4); v.a(4,1); v.z(5); v.a(5,1)
+        v.jz(6,8,of)
+        v.g(4); v.c+="["
+        v.sa(3,5,6,7); v.a(2,1)
+        v.cp(2,6,7); v.d(6,4)
+        def o4():
+         v.a(3,1)
+         v.g(3); v.c+="."; v.z(2); v.z(3)
+        v.jz(6,8,o4)
+        v.z(4); v.c+="]"; v.g(1); v.c+="[-],]"
+        
+        for x in v.c: c(x)
+        EOF
         python3 tools/forge_compiler_direct.py > src/voidos_compiler.spaces
         echo "✅ Pure Spaces Compiler Written directly."
 
@@ -136,8 +239,8 @@ jobs:
         echo "--- Oracle VM compiles the VoidOS Native Compiler ---"
         ./bin/ref_vm src/compiler.spaces < src/voidos_compiler.spaces > seed/voidos_compiler.img
         
-        # 1MBへのパディングは安全のために残しておきます
-        truncate -s 1M seed/voidos_compiler.img
+        # 【最重要パッチ】1MB(フロッピー)ではなく 10MB(HDD) にパディングして CHS境界エラーを粉砕！
+        truncate -s 10M seed/voidos_compiler.img
         
         IMG_SIZE=$(stat -c%s seed/voidos_compiler.img)
         echo "✅ Bootable Compiler Image Forged & Padded! Size: $IMG_SIZE bytes"
