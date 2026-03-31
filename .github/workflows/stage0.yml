@@ -12,7 +12,8 @@ jobs:
       run: |
         echo "=== Setting up Bare Metal Environment ==="
         sudo apt-get update
-        sudo apt-get install -y gcc qemu-system-x86 python3 nasm
+        # タイムゾーン等の対話プロンプトを物理的に封殺して完全自動インストール！
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y gcc qemu-system-x86 python3 nasm
 
 
     - name: 2. Compile Oracle VM
