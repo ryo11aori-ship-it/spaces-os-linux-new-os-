@@ -20,7 +20,7 @@ jobs:
         mkdir -p bin src seed tests
         gcc -O3 src/ref/vm.c -o bin/ref_vm
 
-    - name: 3. Forge VoidOS Meta-Compiler (Native x86 Assembler Embedded)
+    - name: 3. Forge VoidOS Meta-Compiler (UTF-8 Decoder Embedded)
       run: |
         echo "--- Forging Spaces v2.0 Meta-Compiler ---"
         cat << 'EOF' > tools/gen_spaces_compiler_bf_bundler.py
@@ -73,10 +73,7 @@ jobs:
         a.i(0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xBC, 0x00, 0x7C, 0xFB)
         a.i(0xB4, 0x00, 0xB0, 0xE3, 0x31, 0xD2, 0xCD, 0x14)
         a.i(0xB4, 0x01, 0xB0, 0x42, 0x31, 0xD2, 0xCD, 0x14)
-        
-        # 究極のハック：破壊されたドライブ番号を復元！ B2 80 (mov dl, 0x80) を叩き込む！
         a.i(0xB4, 0x02, 0xB0, 0x30, 0xB5, 0x00, 0xB1, 0x02, 0xB6, 0x00, 0xB2, 0x80, 0xBB, 0x00, 0x7E, 0xCD, 0x13)
-        
         a.i(0xB4, 0x01, 0xB0, 0x52, 0x31, 0xD2, 0xCD, 0x14)
         a.i(0xBE, 0x00, 0x7E, 0xBF, 0x00, 0x10)
         a.lbl('next')
@@ -105,28 +102,30 @@ jobs:
         v.opt(20, 0x55); v.g(20); v.c+="."
         v.opt(20, 0xAA); v.g(20); v.c+="."
 
-        v.z(2); v.z(3); v.g(1); v.c+=",["
-        v.z(4); v.z(5)
-        v.cp(1,6,7); v.d(6,32)
-        def os(): v.z(4); v.a(4,1); v.z(5)
-        v.jz(6,8,os)
-        v.cp(1,6,7); v.d(6,227)
-        def of(): v.c+="[-],[-],"; v.z(4); v.a(4,1); v.z(5); v.a(5,1)
-        v.jz(6,8,of)
-        v.g(4); v.c+="["
-        v.sa(3,5,6,7); v.a(2,1)
-        v.cp(2,6,7); v.d(6,4)
-        def o4():
-         v.a(3,1)
-         v.g(3); v.c+="."; v.z(2); v.z(3)
-        v.jz(6,8,o4)
-        v.z(4); v.c+="]"; v.g(1); v.c+="[-],]"
+        # 究極のハック：UTF-8ビットストリーム・デコーダ回路
+        v.z(10)
+        v.g(1); v.c+=","
+        v.g(1); v.c+="["
+        def rb(w):
+         v.cp(1,2,3); v.d(2,32); v.z(4); v.a(4,1)
+         def ih(): v.z(4)
+         v.jz(2,5,ih)
+         v.g(4); v.c+="["
+         v.g(1); v.c+=","; v.g(1); v.c+=","
+         v.a(10,w); v.z(4); v.c+="]"
+        rb(8)
+        v.g(1); v.c+=","; rb(4)
+        v.g(1); v.c+=","; rb(2)
+        v.g(1); v.c+=","; rb(1)
+        v.a(10,1); v.g(10); v.c+="."; v.z(10)
+        v.g(1); v.c+=","; v.g(1); v.c+="]"
+        
         sys.stdout.write(v.c)
         EOF
         python3 tools/gen_spaces_compiler_bf_bundler.py > src/compiler.bf
         python3 tools/bf_to_spaces.py src/compiler.bf > src/compiler.spaces
 
-    - name: 4. Forge VoidOS Native Compiler (No Brainfuck Middleman)
+    - name: 4. Forge VoidOS Native Compiler (Direct Spaces)
       run: |
         echo "--- Writing OS Compiler directly to Spaces ---"
         cat << 'EOF' > tools/forge_compiler_direct.py
@@ -188,10 +187,7 @@ jobs:
         a.i(0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xBC, 0x00, 0x7C, 0xFB)
         a.i(0xB4, 0x00, 0xB0, 0xE3, 0x31, 0xD2, 0xCD, 0x14)
         a.i(0xB4, 0x01, 0xB0, 0x42, 0x31, 0xD2, 0xCD, 0x14)
-        
-        # こちらにも B2 80 (mov dl, 0x80) を適用！
         a.i(0xB4, 0x02, 0xB0, 0x30, 0xB5, 0x00, 0xB1, 0x02, 0xB6, 0x00, 0xB2, 0x80, 0xBB, 0x00, 0x7E, 0xCD, 0x13)
-        
         a.i(0xB4, 0x01, 0xB0, 0x52, 0x31, 0xD2, 0xCD, 0x14)
         a.i(0xBE, 0x00, 0x7E, 0xBF, 0x00, 0x10)
         a.lbl('next')
@@ -220,23 +216,24 @@ jobs:
         v.opt(20, 0x55); v.g(20); v.c+="."
         v.opt(20, 0xAA); v.g(20); v.c+="."
 
-        v.z(2); v.z(3); v.g(1); v.c+=",["
-        v.z(4); v.z(5)
-        v.cp(1,6,7); v.d(6,32)
-        def os(): v.z(4); v.a(4,1); v.z(5)
-        v.jz(6,8,os)
-        v.cp(1,6,7); v.d(6,227)
-        def of(): v.c+="[-],[-],"; v.z(4); v.a(4,1); v.z(5); v.a(5,1)
-        v.jz(6,8,of)
-        v.g(4); v.c+="["
-        v.sa(3,5,6,7); v.a(2,1)
-        v.cp(2,6,7); v.d(6,4)
-        def o4():
-         v.a(3,1)
-         v.g(3); v.c+="."; v.z(2); v.z(3)
-        v.jz(6,8,o4)
-        v.z(4); v.c+="]"; v.g(1); v.c+="[-],]"
+        v.z(10)
+        v.g(1); v.c+=","
+        v.g(1); v.c+="["
+        def rb(w):
+         v.cp(1,2,3); v.d(2,32); v.z(4); v.a(4,1)
+         def ih(): v.z(4)
+         v.jz(2,5,ih)
+         v.g(4); v.c+="["
+         v.g(1); v.c+=","; v.g(1); v.c+=","
+         v.a(10,w); v.z(4); v.c+="]"
+        rb(8)
+        v.g(1); v.c+=","; rb(4)
+        v.g(1); v.c+=","; rb(2)
+        v.g(1); v.c+=","; rb(1)
+        v.a(10,1); v.g(10); v.c+="."; v.z(10)
+        v.g(1); v.c+=","; v.g(1); v.c+="]"
         
+        # 妥協なし！ 純粋なSpaces言語として出力！
         for x in v.c: c(x)
         EOF
         python3 tools/forge_compiler_direct.py > src/voidos_compiler.spaces
@@ -245,6 +242,7 @@ jobs:
     - name: 5. Bootstrap OS Compiler Image
       run: |
         echo "--- Oracle VM compiles the VoidOS Native Compiler ---"
+        # 完全に純化されたSpacesファイル(UTF-8)をコンパイル！
         ./bin/ref_vm src/compiler.spaces < src/voidos_compiler.spaces > seed/voidos_compiler.img
         
         REAL_SIZE=$(stat -c%s seed/voidos_compiler.img)
