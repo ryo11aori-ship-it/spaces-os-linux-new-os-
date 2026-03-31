@@ -110,12 +110,15 @@ jobs:
     - name: 6. The First Cry of the Compiler OS (QEMU Boot Test)
       run: |
         echo "=== Booting VoidOS Native Compiler in QEMU ==="
-        # ファイル名を voidos_compiler.img に修正して起動
-        timeout 5 qemu-system-x86_64 -nographic -drive format=raw,file=seed/voidos_compiler.img | tee boot.log || true
+        # ターミナルの文字コード干渉を防ぐため、シリアル出力を直接 raw バイナリファイルに書き出す
+        timeout 5 qemu-system-x86_64 -display none -serial file:serial.bin -drive format=raw,file=seed/voidos_compiler.img || true
         
-        # Compiler OS は「次の世代のMBRバイナリ」をシリアルポートから出力する
-        # 文字列の "VOID" ではなく、MBRの先頭機械語 (FA 31 C0 8E D8 8E) をバイナリダンプから検索して稼働証明とする
-        if od -v -t x1 boot.log | tr -d ' \n' | grep -q "fa31c08ed88e"; then
+        echo "--- Hex Dump of COM1 Serial Output ---"
+        # 何が出力されたか確認できるように最初の数行をダンプ
+        od -v -t x1 serial.bin | head -n 10
+        
+        # 純粋なバイナリファイルからMBRの先頭機械語 (fa 31 c0 8e d8 8e) を検索
+        if od -v -t x1 serial.bin | tr -d ' \n' | grep -q "fa31c08ed88e"; then
           echo "🎉 SUCCESS! The VoidOS Native Compiler booted and emitted the next generation's MBR!"
         else
           echo "❌ FAILED: The Compiler OS did not boot or emit correctly."
