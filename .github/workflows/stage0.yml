@@ -12,7 +12,8 @@ jobs:
       run: |
         echo "=== Setting up Bare Metal Environment ==="
         sudo apt-get update
-        sudo apt-get install -y gcc qemu-system-x86 python3
+        sudo apt-get install -y gcc qemu-system-x86 python3 nasm
+
 
     - name: 2. Compile Oracle VM
       run: |
@@ -30,9 +31,117 @@ jobs:
 
     - name: 4. Forge VoidOS Native Compiler (No Brainfuck Middleman)
       run: |
-        echo "--- Writing OS Compiler directly to Spaces ---"
+        echo "--- Compiling Void Engine (MBR) via NASM ---"
+        # ループ([, ])に完全対応した16ビットリアルモードのフル機能インタプリタ！
+        cat << 'EOF' > src/mbr.asm
+        org 0x7c00
+        bits 16
+        cli
+        xor ax, ax
+        mov ds, ax
+        mov es, ax
+        mov ss, ax
+        mov sp, 0x7c00
+        mov ah, 0x02
+        mov al, 0x40
+        mov ch, 0
+        mov cl, 2
+        mov dh, 0
+        mov bx, 0x7e00
+        int 0x13
+        mov si, 0x7e00
+        mov di, 0x1000
+        next_instr:
+        mov al, [si]
+        inc si
+        or al, al
+        jz halt
+        cmp al, 0
+        jne .L1
+        inc di
+        jmp next_instr
+        .L1:
+        cmp al, 1
+        jne .L2
+        dec di
+        jmp next_instr
+        .L2:
+        cmp al, 2
+        jne .L3
+        inc byte [di]
+        jmp next_instr
+        .L3:
+        cmp al, 3
+        jne .L4
+        dec byte [di]
+        jmp next_instr
+        .L4:
+        cmp al, 4
+        jne .L5
+        mov al, [di]
+        mov ah, 0x01
+        xor dx, dx
+        int 0x14
+        jmp next_instr
+        .L5:
+        cmp al, 5
+        jne .L6
+        mov ah, 0x02
+        xor dx, dx
+        int 0x14
+        mov [di], al
+        jmp next_instr
+        .L6:
+        cmp al, 6
+        jne .L7
+        cmp byte [di], 0
+        jne next_instr
+        mov cx, 1
+        .fwd:
+        mov al, [si]
+        inc si
+        cmp al, 6
+        jne .fwd_not_l
+        inc cx
+        .fwd_not_l:
+        cmp al, 7
+        jne .fwd_not_r
+        dec cx
+        .fwd_not_r:
+        or cx, cx
+        jnz .fwd
+        jmp next_instr
+        .L7:
+        cmp al, 7
+        jne next_instr
+        cmp byte [di], 0
+        jz next_instr
+        mov cx, 1
+        sub si, 2
+        .bwd:
+        mov al, [si]
+        dec si
+        cmp al, 7
+        jne .bwd_not_r
+        inc cx
+        .bwd_not_r:
+        cmp al, 6
+        jne .bwd_not_l
+        dec cx
+        .bwd_not_l:
+        or cx, cx
+        jnz .bwd
+        add si, 2
+        jmp next_instr
+        halt:
+        hlt
+        jmp halt
+        times 510-($-$$) db 0
+        dw 0xaa55
+        EOF
+        nasm -f bin src/mbr.asm -o src/mbr.bin
         
-        # 1. ジェネレータをCI環境上で動的に錬成 (インデントエラーを物理排除)
+        echo "--- Writing OS Compiler directly to Spaces ---"
         cat << 'EOF' > tools/forge_compiler_direct.py
         import sys
         def o(v):
@@ -67,10 +176,9 @@ jobs:
           s.cp(v,t1,t2)
           s.g(t1); s.c+="["; s.g(b); s.c+="+"; s.g(t1); s.c+="-]"
         v=VM()
-        mbr=[0]*512
-        m=[0xFA,0x31,0xC0,0x8E,0xD8,0x8E,0xC0,0x8E,0xD0,0xBC,0x00,0x7C,0xB4,0x02,0xB0,0x10,0xB5,0x00,0xB1,0x02,0xB6,0x00,0xBB,0x00,0x7E,0xCD,0x13,0xBE,0x00,0x7E,0xBF,0x00,0x10,0x8A,0x04,0x46,0x08,0xC0,0x74,0x25,0x3C,0x03,0x75,0x02,0xFE,0x05,0x3C,0x04,0x75,0x02,0xFE,0x0D,0x3C,0x01,0x75,0x01,0x47,0x3C,0x02,0x75,0x01,0x4F,0x3C,0x05,0x75,0x09,0x8A,0x05,0xB4,0x01,0xBA,0x00,0x00,0xCD,0x14,0xEB,0xD4,0xF4,0xEB,0xFD]
-        for i in range(len(m)): mbr[i]=m[i]
-        mbr[510]=0x55; mbr[511]=0xAA
+        # ここが魔法！手打ちをやめ、アセンブルしたバイナリを直接DNAに埋め込む
+        with open("src/mbr.bin", "rb") as f:
+         mbr = f.read()
         for b in mbr:
          v.z(20); v.a(20,b); v.g(20); v.c+="."
         v.z(2); v.z(3)
@@ -95,7 +203,6 @@ jobs:
         for x in v.c: c(x)
         EOF
         
-        # 2. Pythonから直接、コンパイラ(Spaces)を生成
         python3 tools/forge_compiler_direct.py > src/voidos_compiler.spaces
         echo "✅ Pure Spaces Compiler Written directly."
 
