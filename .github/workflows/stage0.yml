@@ -1,4 +1,4 @@
-name: VoidOS Spaces v2.0 CI
+name: Pure VoidOS Boot Sequence
 on: [push, workflow_dispatch]
 permissions:
   contents: write
@@ -8,49 +8,65 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: 1. Setup Tools & QEMU
+    - name: 1. Setup Tools & Virtual Hardware
       run: |
         echo "=== Setting up Bare Metal Environment ==="
         sudo apt-get update
         sudo apt-get install -y gcc qemu-system-x86 python3
 
-    - name: 2. Compile Oracle VM (Spaces v2.0)
+    - name: 2. Compile Oracle VM
       run: |
         echo "--- Compiling 4-Bit Oracle VM ---"
         mkdir -p bin src seed tests
         gcc -O3 src/ref/vm.c -o bin/ref_vm
 
-    - name: 3. Bootstrap VoidOS Compiler
+    - name: 3. Forge VoidOS Meta-Compiler
       run: |
         echo "--- Forging Spaces v2.0 Meta-Compiler ---"
         python3 tools/gen_spaces_compiler_bf_bundler.py > src/compiler.bf
         python3 tools/bf_to_spaces.py src/compiler.bf > src/compiler.spaces
-        
+
+    - name: 4. Write Pure Spaces Kernel
+      run: |
+        echo "--- Writing OS Kernel in Pure Spaces ---"
+        # ハードウェア(COM1)に直接 "VOID" を出力するベアメタルカーネル
+        # V (86), O (79), I (73), D (68)
+        cat << 'EOF' > src/kernel.bf
+        ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++.
+        -------.
+        ------.
+        -----.
+        EOF
+        # カーネルを完全な空白文字言語に変換
+        python3 tools/bf_to_spaces.py src/kernel.bf > src/kernel.spaces
+        echo "✅ Pure Spaces Kernel Written."
+
+    - name: 5. Bootstrap OS Image
+      run: |
         echo "--- Self-Hosting: Oracle VM compiles the VoidOS Boot Image ---"
-        # 拡張子を .elf ではなく、ディスクイメージ .img に変更！
-        ./bin/ref_vm src/compiler.spaces < src/compiler.spaces > seed/void_boot.img
+        ./bin/ref_vm src/compiler.spaces < src/kernel.spaces > seed/voidos.img
         
-        IMG_SIZE=$(stat -c%s seed/void_boot.img)
+        IMG_SIZE=$(stat -c%s seed/voidos.img)
         echo "✅ Boot Image Forged! Size: $IMG_SIZE bytes"
 
-    - name: 4. The First Cry of VoidOS (QEMU Boot Test)
+    - name: 6. The First Cry of VoidOS (QEMU Boot Test)
       run: |
         echo "=== Booting VoidOS in QEMU Virtual Hardware ==="
-        # QEMUをグラフィックなし(シリアルポート接続)で起動し、最大5秒間待つ
-        timeout 5 qemu-system-x86_64 -nographic -drive format=raw,file=seed/void_boot.img | tee boot.log || true
+        # QEMUを起動し、Spacesカーネルがシリアルポートを叩くのを監視
+        timeout 5 qemu-system-x86_64 -nographic -drive format=raw,file=seed/voidos.img | tee boot.log || true
         
-        # MBRの機械語がシリアルポート(COM1)に正しく "VOID" を叫んだか確認
         if grep -q "VOID" boot.log; then
-          echo "🎉 SUCCESS! The Spaces-generated MBR successfully booted and spoke to hardware!"
+          echo "🎉 SUCCESS! The VoidOS Kernel successfully booted and controlled the bare metal!"
         else
           echo "❌ FAILED: The OS did not boot correctly."
           exit 1
         fi
 
-    - name: 5. Upload VoidOS Image
+    - name: 7. Upload VoidOS Image
       uses: actions/upload-artifact@v4
       with:
         name: voidos-boot-image
         path: |
           seed/*.img
           *.log
+          src/
