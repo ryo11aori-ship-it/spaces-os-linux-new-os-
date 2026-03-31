@@ -147,7 +147,7 @@ jobs:
          def d(s,n,v): s.g(n); s.c+="-"*v
          def z(s,n): s.g(n); s.c+="[-]"
          # 超圧縮：定数生成オプティマイザ (イメージサイズを1/6に圧縮)
-         def p(s,n,v):
+         def opt(s,n,v):
           s.z(n)
           if v<=15: s.a(n,v)
           else:
@@ -216,7 +216,7 @@ jobs:
          def a(s,n,v): s.g(n); s.c+="+"*v
          def d(s,n,v): s.g(n); s.c+="-"*v
          def z(s,n): s.g(n); s.c+="[-]"
-         def p(s,n,v):
+         def opt(s,n,v):
           s.z(n)
           if v<=15: s.a(n,v)
           else:
