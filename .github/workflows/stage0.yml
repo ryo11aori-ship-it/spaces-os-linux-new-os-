@@ -107,16 +107,18 @@ jobs:
         IMG_SIZE=$(stat -c%s seed/voidos_compiler.img)
         echo "✅ Bootable Compiler Image Forged! Size: $IMG_SIZE bytes"
 
-    - name: 6. The First Cry of VoidOS (QEMU Boot Test)
+    - name: 6. The First Cry of the Compiler OS (QEMU Boot Test)
       run: |
-        echo "=== Booting VoidOS in QEMU Virtual Hardware ==="
-        # QEMUを起動し、Spacesカーネルがシリアルポートを叩くのを監視
-        timeout 5 qemu-system-x86_64 -nographic -drive format=raw,file=seed/voidos.img | tee boot.log || true
+        echo "=== Booting VoidOS Native Compiler in QEMU ==="
+        # ファイル名を voidos_compiler.img に修正して起動
+        timeout 5 qemu-system-x86_64 -nographic -drive format=raw,file=seed/voidos_compiler.img | tee boot.log || true
         
-        if grep -q "VOID" boot.log; then
-          echo "🎉 SUCCESS! The VoidOS Kernel successfully booted and controlled the bare metal!"
+        # Compiler OS は「次の世代のMBRバイナリ」をシリアルポートから出力する
+        # 文字列の "VOID" ではなく、MBRの先頭機械語 (FA 31 C0 8E D8 8E) をバイナリダンプから検索して稼働証明とする
+        if od -v -t x1 boot.log | tr -d ' \n' | grep -q "fa31c08ed88e"; then
+          echo "🎉 SUCCESS! The VoidOS Native Compiler booted and emitted the next generation's MBR!"
         else
-          echo "❌ FAILED: The OS did not boot correctly."
+          echo "❌ FAILED: The Compiler OS did not boot or emit correctly."
           exit 1
         fi
 
