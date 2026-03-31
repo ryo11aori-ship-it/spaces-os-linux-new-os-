@@ -23,7 +23,6 @@ jobs:
     - name: 3. Compile Void Engine (MBR) via NASM
       run: |
         echo "--- Compiling Void Engine (MBR) ---"
-        # 1〜8にシフトされたISAを正確に解釈する真のマイクロコード
         cat << 'EOF' > src/mbr.asm
         org 0x7c00
         bits 16
@@ -146,7 +145,6 @@ jobs:
          def a(s,n,v): s.g(n); s.c+="+"*v
          def d(s,n,v): s.g(n); s.c+="-"*v
          def z(s,n): s.g(n); s.c+="[-]"
-         # 超圧縮：定数生成オプティマイザ (イメージサイズを1/6に圧縮)
          def opt(s,n,v):
           s.z(n)
           if v<=15: s.a(n,v)
@@ -172,7 +170,7 @@ jobs:
         v=VM()
         with open("src/mbr.bin", "rb") as f: mbr = f.read()
         for b in mbr:
-         v.p(20,b); v.g(20); v.c+="."
+         v.opt(20,b); v.g(20); v.c+="."
         v.z(2); v.z(3); v.g(1); v.c+=",["
         v.z(4); v.z(5)
         v.cp(1,6,7); v.d(6,32)
@@ -241,7 +239,7 @@ jobs:
         v=VM()
         with open("src/mbr.bin", "rb") as f: mbr = f.read()
         for b in mbr:
-         v.p(20,b); v.g(20); v.c+="."
+         v.opt(20,b); v.g(20); v.c+="."
         v.z(2); v.z(3); v.g(1); v.c+=",["
         v.z(4); v.z(5)
         v.cp(1,6,7); v.d(6,32)
