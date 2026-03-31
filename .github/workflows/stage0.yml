@@ -31,7 +31,25 @@ jobs:
     - name: 4. Forge Pure Spaces Kernel (No Brainfuck Middleman)
       run: |
         echo "--- Writing OS Kernel directly to Spaces ---"
-        # BFファイルを一切介さず、Pythonから直接カーネル(Spaces)を生成
+        
+        # 1. ジェネレータ(forge_kernel.py)をCI環境上で動的に錬成
+        cat << 'EOF' > tools/forge_kernel.py
+        import sys
+        def o(v):
+         sys.stdout.write("\u3000" if (v>>3)&1 else " ")
+         sys.stdout.write("\u3000" if (v>>2)&1 else " ")
+         sys.stdout.write("\u3000" if (v>>1)&1 else " ")
+         sys.stdout.write("\u3000" if v&1 else " ")
+        def c(op):
+         m={'>':0,'<':1,'+':2,'-':3,'.':4,',':5,'[':6,']':7}
+         if op in m: o(m[op])
+        s="++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++.-------.------.-----.------.------------------------------."
+        for x in s: c(x)
+        l="+[.,]"
+        for x in l: c(x)
+        EOF
+        
+        # 2. BFファイルを一切介さず、Pythonから直接カーネル(Spaces)を生成
         python3 tools/forge_kernel.py > src/kernel.spaces
         echo "✅ Pure Spaces Kernel Written directly."
 
