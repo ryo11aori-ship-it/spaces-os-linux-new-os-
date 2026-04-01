@@ -14,7 +14,7 @@ jobs:
         sudo apt-get update
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-x86 python3 pv
 
-    - name: 2. Build VoidOS Architecture
+    - name: 2. Build VoidOS Architecture (Echo Test)
       run: |
         set -euo pipefail
         echo "--- Building bootable image directly ---"
@@ -38,7 +38,7 @@ jobs:
             def jcc8(self, opcode: int, label: str) -> None:
                 pos = len(self.buf)
                 self.buf.extend([opcode, 0])
-                self.fixups.append((pos + 1, label))  # displacement byte index
+                self.fixups.append((pos + 1, label))
 
             def resolve(self) -> bytes:
                 for pos, label in self.fixups:
@@ -83,7 +83,7 @@ jobs:
                 0x73, 0x0B,             # jnc +11
             ])
 
-            # failure block, exactly 11 bytes
+            # failure block
             mbr += bytes([
                 0xB4, 0x0E,             # mov ah, 0x0E
                 0xB0, 0x45,             # mov al, 'E'
@@ -127,36 +127,44 @@ jobs:
                 0xBA, 0xFC, 0x03, 0xB0, 0x0B, 0xEE,  # MCR
             )
 
-            # Stream the boot sector (0x7C00..0x7DFF) as raw bytes to COM1
-            s.emit(
-                0xBE, 0x00, 0x7C,       # mov si, 0x7C00
-                0xB9, 0x00, 0x02,       # mov cx, 0x0200
-            )
+            # === エコーサーバのメインループ ===
+            s.label("loop")
+            
+            # 受信(RX)待ち
+            s.label("wait_rx")
+            s.emit(0xBA, 0xFD, 0x03)    # mov dx, 0x3FD (LSR)
+            s.emit(0xEC)                # in al, dx
+            s.emit(0xA8, 0x01)          # test al, 1 (Data Ready)
+            s.jcc8(0x74, "wait_rx")     # jz wait_rx
+            
+            # 1バイト読み込み
+            s.emit(0xBA, 0xF8, 0x03)    # mov dx, 0x3F8 (RX Buffer)
+            s.emit(0xEC)                # in al, dx
+            
+            # 0x00(EOF)なら終了処理へ
+            s.emit(0x08, 0xC0)          # or al, al
+            s.jcc8(0x74, "halt")        # jz halt
+            
+            # 読み込んだバイトを一旦CLに退避
+            s.emit(0x88, 0xC1)          # mov cl, al
+            
+            # 送信(TX)バッファ空き待ち
+            s.label("wait_tx")
+            s.emit(0xBA, 0xFD, 0x03)    # mov dx, 0x3FD (LSR)
+            s.emit(0xEC)                # in al, dx
+            s.emit(0xA8, 0x20)          # test al, 0x20 (THR Empty)
+            s.jcc8(0x74, "wait_tx")     # jz wait_tx
+            
+            # 退避したバイトをALに戻して送信！
+            s.emit(0x88, 0xC8)          # mov al, cl
+            s.emit(0xBA, 0xF8, 0x03)    # mov dx, 0x3F8 (TX Buffer)
+            s.emit(0xEE)                # out dx, al
+            
+            s.jcc8(0xEB, "loop")        # jmp loop
 
-            s.label("top")
-            s.emit(
-                0xBA, 0xFD, 0x03,       # mov dx, 0x3FD
-            )
-            s.label("wait")
-            s.emit(
-                0xEC,                   # in al, dx
-                0xA8, 0x20,             # test al, 0x20 (THR empty)
-            )
-            s.jcc8(0x74, "wait")        # jz wait
-
-            s.emit(
-                0xBA, 0xF8, 0x03,       # mov dx, 0x3F8
-                0x8A, 0x04,             # mov al, [si]
-                0xEE,                   # out dx, al
-                0x46,                   # inc si
-            )
-            s.jcc8(0xE2, "top")         # loop top
-
-            s.emit(
-                0xFA,                   # cli
-                0xF4,                   # hlt
-                0xEB, 0xFE,             # jmp $
-            )
+            # 終了処理 (halt)
+            s.label("halt")
+            s.emit(0xFA, 0xF4, 0xEB, 0xFE)
 
             stage2 = s.resolve()
             return stage2.ljust(512, b'\x00')
@@ -169,9 +177,12 @@ jobs:
             Path("seed/voidos_compiler.img").write_bytes(img)
             Path("seed/voidos_compiler.img").write_bytes(img.ljust(10 * 1024 * 1024, b'\x00'))
 
+            # テスト用のペイロード(Hello, VoidOS! + EOF)を生成
+            payload = b"Hello, VoidOS!\n" + b"\x00"
+            Path("payload.txt").write_bytes(payload)
+
             print(f"MBR size: {len(mbr)}")
             print(f"Stage2 size: {len(stage2)}")
-            print(f"Image size: {Path('seed/voidos_compiler.img').stat().st_size}")
 
         if __name__ == "__main__":
             main()
@@ -179,12 +190,13 @@ jobs:
 
         python3 tools/build_os.py
 
-    - name: 3. The First Cry of the Compiler OS (QEMU Boot Test)
+    - name: 3. The Echo of VoidOS (QEMU Boot Test)
       run: |
         set -euo pipefail
         echo "=== Booting VoidOS Native Compiler in QEMU ==="
 
-        timeout 180 qemu-system-x86_64 \
+        # pvを使ってペイロードを流し込む。エコーが返ってくれば成功！
+        pv -q -L 5000 payload.txt | timeout 180 qemu-system-x86_64 \
           -display none \
           -serial stdio \
           -drive file=seed/voidos_compiler.img,format=raw,index=0,media=disk \
@@ -192,12 +204,14 @@ jobs:
 
         echo "--- Hex Dump of COM1 Serial Output ---"
         ls -l serial.bin
-        od -v -t x1 serial.bin | head -n 20
+        od -v -t c serial.bin | head -n 20
 
-        if od -v -t x1 serial.bin | tr -d ' \n' | grep -q "fa31c08ed88e"; then
-          echo "🎉 SUCCESS!"
+        # 送信した文字列がそのまま受信(シリアル出力)されているか確認！
+        if grep -q "Hello, VoidOS!" serial.bin; then
+          echo "🎉 SUCCESS! The OS successfully echoed the input string!"
         else
-          echo "❌ FAILED"
+          echo "❌ FAILED: The OS did not echo correctly."
+          cat serial.bin
           exit 1
         fi
 
