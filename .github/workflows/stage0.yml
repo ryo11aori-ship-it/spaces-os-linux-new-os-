@@ -68,14 +68,10 @@ jobs:
             mbr = bytearray()
             mbr += bytes([0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xBC, 0x00, 0x7C, 0xFB])
             mbr += bytes([0x88, 0x16, 0x00, 0x05])
-            # Load Stage 2
             mbr += bytes([0xB4, 0x02, 0xB0, 0x02, 0xB5, 0x00, 0xB1, 0x02, 0xB6, 0x00])
             mbr += bytes([0x8A, 0x16, 0x00, 0x05, 0xBB, 0x00, 0x7E, 0xCD, 0x13, 0x73, 0x0B])
-            # Error
             mbr += bytes([0xB4, 0x0E, 0xB0, 0x45, 0xCD, 0x10, 0xFA, 0xF4, 0xEB, 0xFE, 0x90])
-            # Jump
             mbr += bytes([0xEA, 0x00, 0x7E, 0x00, 0x00])
-
             if len(mbr) > 510: raise ValueError("MBR too large")
             return bytes(mbr.ljust(510, b'\x00') + b'\x55\xAA')
 
@@ -95,11 +91,11 @@ jobs:
             )
 
             # === Phase 1: Spaces UTF-8 Decoder & Loader ===
-            s.emit(0xBF, 0x00, 0x80)    # di = 0x8000 (Code Memory)
+            s.emit(0xBF, 0x00, 0x80)    # di = 0x8000
             
             s.label("load_op")
-            s.emit(0x31, 0xDB)          # bx = 0 (bl will hold the 4-bit opcode)
-            s.emit(0xB9, 0x04, 0x00)    # cx = 4 (bits to read)
+            s.emit(0x31, 0xDB)          # bx = 0
+            s.emit(0xB9, 0x04, 0x00)    # cx = 4
             
             s.label("read_char")
             s.label("wait_rx1")
@@ -108,15 +104,18 @@ jobs:
             s.emit(0xBA, 0xF8, 0x03, 0xEC)
             
             s.emit(0x08, 0xC0)          # EOF (0x00)?
-            s.jcc8(0x74, "vm_init")     # Yes -> Execute!
             
+            # 【修正点1】8bit限界突破。EOFならvm_initへ16bitジャンプ！
+            s.jcc8(0x75, "chk_half")    # 0x00じゃなければ判定を続行
+            s.jmp16("vm_init")          # 0x00なら長距離ジャンプ！
+            
+            s.label("chk_half")
             s.emit(0x3C, 0x20)          # Half space?
             s.jcc8(0x74, "bit_zero")
             
             s.emit(0x3C, 0xE3)          # Full space?
-            s.jcc8(0x75, "read_char")   # Ignore other chars (newlines etc)
+            s.jcc8(0x75, "read_char")
             
-            # Read remaining 2 bytes of UTF-8 full space
             s.label("wait_rx2")
             s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x01)
             s.jcc8(0x74, "wait_rx2")
@@ -126,20 +125,17 @@ jobs:
             s.jcc8(0x74, "wait_rx3")
             s.emit(0xBA, 0xF8, 0x03, 0xEC)
             
-            # Bit 1 processing
             s.emit(0xD1, 0xE3)          # shl bx, 1
             s.emit(0x83, 0xCB, 0x01)    # or bx, 1
             s.jmp8("bit_done")
             
-            # Bit 0 processing
             s.label("bit_zero")
             s.emit(0xD1, 0xE3)          # shl bx, 1
             
             s.label("bit_done")
-            s.emit(0x49, 0x09, 0xC9)    # dec cx, or cx, cx
-            s.jcc8(0x75, "read_char")   # jnz read_char
+            s.emit(0x49, 0x09, 0xC9)
+            s.jcc8(0x75, "read_char")
             
-            # 4 bits read! Store the opcode
             s.emit(0x88, 0x1D, 0x47)    # mov [di], bl; inc di
             s.jmp16("load_op")
 
@@ -147,46 +143,49 @@ jobs:
             s.label("vm_init")
             s.emit(0xB0, 0xFF, 0xAA)    # Null-terminate code with 0xFF
             
-            # Clear Tape (0x1000 ~ 0x7FFF)
             s.emit(0xBF, 0x00, 0x10)
             s.emit(0xB9, 0x00, 0x30)
             s.emit(0x31, 0xC0)
             s.emit(0xF3, 0xAA)
             
-            s.emit(0xBE, 0x00, 0x80)    # si = 0x8000 (Instruction Pointer)
-            s.emit(0xBD, 0x00, 0x10)    # bp = 0x1000 (Data Pointer)
+            s.emit(0xBE, 0x00, 0x80)    # si = 0x8000
+            s.emit(0xBD, 0x00, 0x10)    # bp = 0x1000
 
             # === Phase 3: Fetch & Execute Loop ===
             s.label("fetch")
             s.emit(0x8A, 0x04, 0x46)    # al = [si], inc si
             s.emit(0x3C, 0xFF)          # End of code?
-            s.jcc8(0x74, "halt")
             
+            # 【修正点2】8bit限界突破。終了コード(0xFF)ならhaltへ16bitジャンプ！
+            s.jcc8(0x75, "continue_exec") # 0xFFじゃなければ実行を続行
+            s.jmp16("halt")               # 0xFFなら遥か彼方のhaltへ飛ぶ！
+            
+            s.label("continue_exec")
             # 0: '>'
             s.emit(0x3C, 0x00)
             s.jcc8(0x75, "chk_1")
-            s.emit(0x45)                # inc bp
+            s.emit(0x45)
             s.jmp16("fetch")
             
             # 1: '<'
             s.label("chk_1")
             s.emit(0x3C, 0x01)
             s.jcc8(0x75, "chk_2")
-            s.emit(0x4D)                # dec bp
+            s.emit(0x4D)
             s.jmp16("fetch")
             
             # 2: '+'
             s.label("chk_2")
             s.emit(0x3C, 0x02)
             s.jcc8(0x75, "chk_3")
-            s.emit(0x3E, 0xFE, 0x46, 0x00) # inc byte [bp]
+            s.emit(0x3E, 0xFE, 0x46, 0x00)
             s.jmp16("fetch")
             
             # 3: '-'
             s.label("chk_3")
             s.emit(0x3C, 0x03)
             s.jcc8(0x75, "chk_4")
-            s.emit(0x3E, 0xFE, 0x4E, 0x00) # dec byte [bp]
+            s.emit(0x3E, 0xFE, 0x4E, 0x00)
             s.jmp16("fetch")
             
             # 4: '.'
@@ -269,7 +268,6 @@ jobs:
             Path("seed/voidos_compiler.img").write_bytes(img)
             Path("seed/voidos_compiler.img").write_bytes(img.ljust(10 * 1024 * 1024, b'\x00'))
 
-            # "Hello World!\n" のBrainfuckコードをSpaces言語(全角・半角スペース)に変換！
             bf_src = "++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++.\n"
             b_to_s = {'>':0, '<':1, '+':2, '-':3, '.':4, ',':5, '[':6, ']':7}
             payload_bits = []
@@ -309,7 +307,6 @@ jobs:
         ls -l serial.bin
         od -v -t c serial.bin | head -n 20
 
-        # 送信したのは「全角と半角のスペースだけ」。解釈されて「Hello World!」が出れば世界初の偉業達成！
         if grep -q "Hello World!" serial.bin; then
           echo "🎉 SUCCESS! The VoidOS perfectly decoded and interpreted the Spaces source code!"
         else
