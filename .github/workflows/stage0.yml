@@ -14,10 +14,10 @@ jobs:
         sudo apt-get update
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-x86 python3 pv
 
-    - name: 2. Build VoidOS Architecture (Echo Test)
+    - name: 2. Build VoidOS Architecture (Spaces VM)
       run: |
         set -euo pipefail
-        echo "--- Building bootable image directly ---"
+        echo "--- Building Spaces OS directly ---"
         mkdir -p tools seed
 
         cat << 'EOF' > tools/build_os.py
@@ -38,78 +38,52 @@ jobs:
             def jcc8(self, opcode: int, label: str) -> None:
                 pos = len(self.buf)
                 self.buf.extend([opcode, 0])
-                self.fixups.append((pos + 1, label))
+                self.fixups.append((pos + 1, label, 8))
+
+            def jmp8(self, label: str) -> None:
+                self.jcc8(0xEB, label)
+
+            def jmp16(self, label: str) -> None:
+                pos = len(self.buf)
+                self.buf.extend([0xE9, 0, 0])
+                self.fixups.append((pos + 1, label, 16))
 
             def resolve(self) -> bytes:
-                for pos, label in self.fixups:
+                for pos, label, size in self.fixups:
                     if label not in self.labels:
                         raise KeyError(f"undefined label: {label}")
                     target = self.labels[label]
-                    rel = target - (pos + 1)
-                    if not -128 <= rel <= 127:
-                        raise ValueError(f"branch out of range for {label}: {rel}")
-                    self.buf[pos] = rel & 0xFF
+                    if size == 8:
+                        rel = target - (pos + 1)
+                        if not -128 <= rel <= 127:
+                            raise ValueError(f"branch out of range for {label}: {rel}")
+                        self.buf[pos] = rel & 0xFF
+                    elif size == 16:
+                        rel = target - (pos + 2)
+                        self.buf[pos] = rel & 0xFF
+                        self.buf[pos+1] = (rel >> 8) & 0xFF
                 return bytes(self.buf)
 
         def build_mbr() -> bytes:
             mbr = bytearray()
+            mbr += bytes([0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xBC, 0x00, 0x7C, 0xFB])
+            mbr += bytes([0x88, 0x16, 0x00, 0x05])
+            # Load Stage 2
+            mbr += bytes([0xB4, 0x02, 0xB0, 0x02, 0xB5, 0x00, 0xB1, 0x02, 0xB6, 0x00])
+            mbr += bytes([0x8A, 0x16, 0x00, 0x05, 0xBB, 0x00, 0x7E, 0xCD, 0x13, 0x73, 0x0B])
+            # Error
+            mbr += bytes([0xB4, 0x0E, 0xB0, 0x45, 0xCD, 0x10, 0xFA, 0xF4, 0xEB, 0xFE, 0x90])
+            # Jump
+            mbr += bytes([0xEA, 0x00, 0x7E, 0x00, 0x00])
 
-            mbr += bytes([
-                0xFA,
-                0x31, 0xC0,
-                0x8E, 0xD8,
-                0x8E, 0xC0,
-                0x8E, 0xD0,
-                0xBC, 0x00, 0x7C,
-                0xFB,
-            ])
-
-            mbr += bytes([
-                0x88, 0x16, 0x00, 0x05,
-            ])
-
-            mbr += bytes([
-                0xB4, 0x02,
-                0xB0, 0x01,
-                0xB5, 0x00,
-                0xB1, 0x02,
-                0xB6, 0x00,
-                0x8A, 0x16, 0x00, 0x05,
-                0xBB, 0x00, 0x7E,
-                0xCD, 0x13,
-                0x73, 0x0B,
-            ])
-
-            mbr += bytes([
-                0xB4, 0x0E,
-                0xB0, 0x45,
-                0xCD, 0x10,
-                0xFA,
-                0xF4,
-                0xEB, 0xFE,
-                0x90,
-            ])
-
-            mbr += bytes([
-                0xEA, 0x00, 0x7E, 0x00, 0x00,
-            ])
-
-            if len(mbr) > 510:
-                raise ValueError(f"MBR too large: {len(mbr)} bytes")
-
-            mbr = mbr.ljust(510, b'\x00') + b'\x55\xAA'
-            return bytes(mbr)
+            if len(mbr) > 510: raise ValueError("MBR too large")
+            return bytes(mbr.ljust(510, b'\x00') + b'\x55\xAA')
 
         def build_stage2() -> bytes:
             s = Asm()
+            s.emit(0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0)
 
-            s.emit(
-                0xFA,
-                0x31, 0xC0,
-                0x8E, 0xD8,
-                0x8E, 0xC0,
-            )
-
+            # UART Init
             s.emit(
                 0xBA, 0xF9, 0x03, 0xB0, 0x00, 0xEE,
                 0xBA, 0xFB, 0x03, 0xB0, 0x80, 0xEE,
@@ -120,39 +94,172 @@ jobs:
                 0xBA, 0xFC, 0x03, 0xB0, 0x0B, 0xEE,
             )
 
-            s.label("loop")
+            # === Phase 1: Spaces UTF-8 Decoder & Loader ===
+            s.emit(0xBF, 0x00, 0x80)    # di = 0x8000 (Code Memory)
             
-            s.label("wait_rx")
-            s.emit(0xBA, 0xFD, 0x03)
-            s.emit(0xEC)
-            s.emit(0xA8, 0x01)
-            s.jcc8(0x74, "wait_rx")
+            s.label("load_op")
+            s.emit(0x31, 0xDB)          # bx = 0 (bl will hold the 4-bit opcode)
+            s.emit(0xB9, 0x04, 0x00)    # cx = 4 (bits to read)
             
-            s.emit(0xBA, 0xF8, 0x03)
-            s.emit(0xEC)
+            s.label("read_char")
+            s.label("wait_rx1")
+            s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x01)
+            s.jcc8(0x74, "wait_rx1")
+            s.emit(0xBA, 0xF8, 0x03, 0xEC)
             
-            s.emit(0x08, 0xC0)
+            s.emit(0x08, 0xC0)          # EOF (0x00)?
+            s.jcc8(0x74, "vm_init")     # Yes -> Execute!
+            
+            s.emit(0x3C, 0x20)          # Half space?
+            s.jcc8(0x74, "bit_zero")
+            
+            s.emit(0x3C, 0xE3)          # Full space?
+            s.jcc8(0x75, "read_char")   # Ignore other chars (newlines etc)
+            
+            # Read remaining 2 bytes of UTF-8 full space
+            s.label("wait_rx2")
+            s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x01)
+            s.jcc8(0x74, "wait_rx2")
+            s.emit(0xBA, 0xF8, 0x03, 0xEC)
+            s.label("wait_rx3")
+            s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x01)
+            s.jcc8(0x74, "wait_rx3")
+            s.emit(0xBA, 0xF8, 0x03, 0xEC)
+            
+            # Bit 1 processing
+            s.emit(0xD1, 0xE3)          # shl bx, 1
+            s.emit(0x83, 0xCB, 0x01)    # or bx, 1
+            s.jmp8("bit_done")
+            
+            # Bit 0 processing
+            s.label("bit_zero")
+            s.emit(0xD1, 0xE3)          # shl bx, 1
+            
+            s.label("bit_done")
+            s.emit(0x49, 0x09, 0xC9)    # dec cx, or cx, cx
+            s.jcc8(0x75, "read_char")   # jnz read_char
+            
+            # 4 bits read! Store the opcode
+            s.emit(0x88, 0x1D, 0x47)    # mov [di], bl; inc di
+            s.jmp16("load_op")
+
+            # === Phase 2: VM Initialization ===
+            s.label("vm_init")
+            s.emit(0xB0, 0xFF, 0xAA)    # Null-terminate code with 0xFF
+            
+            # Clear Tape (0x1000 ~ 0x7FFF)
+            s.emit(0xBF, 0x00, 0x10)
+            s.emit(0xB9, 0x00, 0x30)
+            s.emit(0x31, 0xC0)
+            s.emit(0xF3, 0xAA)
+            
+            s.emit(0xBE, 0x00, 0x80)    # si = 0x8000 (Instruction Pointer)
+            s.emit(0xBD, 0x00, 0x10)    # bp = 0x1000 (Data Pointer)
+
+            # === Phase 3: Fetch & Execute Loop ===
+            s.label("fetch")
+            s.emit(0x8A, 0x04, 0x46)    # al = [si], inc si
+            s.emit(0x3C, 0xFF)          # End of code?
             s.jcc8(0x74, "halt")
             
-            s.emit(0x88, 0xC1)
+            # 0: '>'
+            s.emit(0x3C, 0x00)
+            s.jcc8(0x75, "chk_1")
+            s.emit(0x45)                # inc bp
+            s.jmp16("fetch")
             
-            s.label("wait_tx")
-            s.emit(0xBA, 0xFD, 0x03)
-            s.emit(0xEC)
-            s.emit(0xA8, 0x20)
-            s.jcc8(0x74, "wait_tx")
+            # 1: '<'
+            s.label("chk_1")
+            s.emit(0x3C, 0x01)
+            s.jcc8(0x75, "chk_2")
+            s.emit(0x4D)                # dec bp
+            s.jmp16("fetch")
             
-            s.emit(0x88, 0xC8)
-            s.emit(0xBA, 0xF8, 0x03)
-            s.emit(0xEE)
+            # 2: '+'
+            s.label("chk_2")
+            s.emit(0x3C, 0x02)
+            s.jcc8(0x75, "chk_3")
+            s.emit(0x3E, 0xFE, 0x46, 0x00) # inc byte [bp]
+            s.jmp16("fetch")
             
-            s.jcc8(0xEB, "loop")
+            # 3: '-'
+            s.label("chk_3")
+            s.emit(0x3C, 0x03)
+            s.jcc8(0x75, "chk_4")
+            s.emit(0x3E, 0xFE, 0x4E, 0x00) # dec byte [bp]
+            s.jmp16("fetch")
+            
+            # 4: '.'
+            s.label("chk_4")
+            s.emit(0x3C, 0x04)
+            s.jcc8(0x75, "chk_5")
+            s.label("tx_wait")
+            s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x20)
+            s.jcc8(0x74, "tx_wait")
+            s.emit(0xBA, 0xF8, 0x03, 0x3E, 0x8A, 0x46, 0x00, 0xEE)
+            s.jmp16("fetch")
+            
+            # 5: ','
+            s.label("chk_5")
+            s.emit(0x3C, 0x05)
+            s.jcc8(0x75, "chk_6")
+            s.label("rx_wait")
+            s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x01)
+            s.jcc8(0x74, "rx_wait")
+            s.emit(0xBA, 0xF8, 0x03, 0xEC, 0x3E, 0x88, 0x46, 0x00)
+            s.jmp16("fetch")
+            
+            # 6: '['
+            s.label("chk_6")
+            s.emit(0x3C, 0x06)
+            s.jcc8(0x75, "chk_7")
+            s.emit(0x3E, 0x80, 0x7E, 0x00, 0x00)
+            s.jcc8(0x75, "fwd_done")
+            s.emit(0xB9, 0x01, 0x00)
+            s.label("fwd_loop")
+            s.emit(0x8A, 0x04, 0x46)
+            s.emit(0x3C, 0x06)
+            s.jcc8(0x75, "fwd_not_l")
+            s.emit(0x41)
+            s.label("fwd_not_l")
+            s.emit(0x3C, 0x07)
+            s.jcc8(0x75, "fwd_chk")
+            s.emit(0x49)
+            s.label("fwd_chk")
+            s.emit(0x09, 0xC9)
+            s.jcc8(0x75, "fwd_loop")
+            s.label("fwd_done")
+            s.jmp16("fetch")
+            
+            # 7: ']'
+            s.label("chk_7")
+            s.emit(0x3C, 0x07)
+            s.jcc8(0x75, "fetch_jmp")
+            s.emit(0x3E, 0x80, 0x7E, 0x00, 0x00)
+            s.jcc8(0x74, "fetch_jmp")
+            s.emit(0xB9, 0x01, 0x00)
+            s.emit(0x83, 0xEE, 0x02)
+            s.label("bwd_loop")
+            s.emit(0x8A, 0x04, 0x4E)
+            s.emit(0x3C, 0x07)
+            s.jcc8(0x75, "bwd_not_r")
+            s.emit(0x41)
+            s.label("bwd_not_r")
+            s.emit(0x3C, 0x06)
+            s.jcc8(0x75, "bwd_chk")
+            s.emit(0x49)
+            s.label("bwd_chk")
+            s.emit(0x09, 0xC9)
+            s.jcc8(0x75, "bwd_loop")
+            s.emit(0x83, 0xC6, 0x02)
+            s.label("fetch_jmp")
+            s.jmp16("fetch")
 
             s.label("halt")
             s.emit(0xFA, 0xF4, 0xEB, 0xFE)
 
             stage2 = s.resolve()
-            return stage2.ljust(512, b'\x00')
+            return stage2.ljust(1024, b'\x00')
 
         def main() -> None:
             mbr = build_mbr()
@@ -162,8 +269,20 @@ jobs:
             Path("seed/voidos_compiler.img").write_bytes(img)
             Path("seed/voidos_compiler.img").write_bytes(img.ljust(10 * 1024 * 1024, b'\x00'))
 
-            payload = b"Hello, VoidOS!\n" + b"\x00"
-            Path("payload.txt").write_bytes(payload)
+            # "Hello World!\n" のBrainfuckコードをSpaces言語(全角・半角スペース)に変換！
+            bf_src = "++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++.\n"
+            b_to_s = {'>':0, '<':1, '+':2, '-':3, '.':4, ',':5, '[':6, ']':7}
+            payload_bits = []
+            for c in bf_src:
+                if c in b_to_s:
+                    val = b_to_s[c]
+                    for i in range(3, -1, -1):
+                        payload_bits.append((val >> i) & 1)
+            
+            with open("payload.spaces", "wb") as f:
+                for bit in payload_bits:
+                    f.write("\u3000".encode("utf-8") if bit else " ".encode("utf-8"))
+                f.write(b"\x00")
 
             print(f"MBR size: {len(mbr)}")
             print(f"Stage2 size: {len(stage2)}")
@@ -174,13 +293,13 @@ jobs:
 
         python3 tools/build_os.py
 
-    - name: 3. The Echo of VoidOS (QEMU Boot Test)
+    - name: 3. The Absolute Void (QEMU Boot Test)
       run: |
         set -euo pipefail
         echo "=== Booting VoidOS Native Compiler in QEMU ==="
 
-        # 究極のハック：QEMUが起動し、OSが「UART初期化(バッファクリア)」を終えるまで2秒待ってから、pvでストリームを開始する！
-        (sleep 2; pv -q -L 5000 payload.txt) | timeout 180 qemu-system-x86_64 \
+        # OSが起動して準備が整うまで2秒待機し、完全なSpacesコードを流し込む！
+        (sleep 2; pv -q -L 5000 payload.spaces) | timeout 180 qemu-system-x86_64 \
           -display none \
           -serial stdio \
           -drive file=seed/voidos_compiler.img,format=raw,index=0,media=disk \
@@ -190,10 +309,11 @@ jobs:
         ls -l serial.bin
         od -v -t c serial.bin | head -n 20
 
-        if grep -q "Hello, VoidOS!" serial.bin; then
-          echo "🎉 SUCCESS! The OS successfully echoed the input string!"
+        # 送信したのは「全角と半角のスペースだけ」。解釈されて「Hello World!」が出れば世界初の偉業達成！
+        if grep -q "Hello World!" serial.bin; then
+          echo "🎉 SUCCESS! The VoidOS perfectly decoded and interpreted the Spaces source code!"
         else
-          echo "❌ FAILED: The OS did not echo correctly."
+          echo "❌ FAILED: The VM did not output correctly."
           cat serial.bin
           exit 1
         fi
