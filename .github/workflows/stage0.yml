@@ -250,27 +250,34 @@ jobs:
     - name: 6. The First Cry of the Compiler OS (QEMU Boot Test)
       run: |
         echo "=== Booting VoidOS Native Compiler in QEMU ==="
-        
-        # 【重要】コンパイラが「ソースコードの終わり」を認識してループを抜けられるように null バイトを追加
         cp src/voidos_compiler.spaces payload.spaces
-        echo -ne '\x00' >> payload.spaces
         
-        # 仮想のシリアルケーブル（双方向パイプ）を作成
+        # Bashの環境依存を完全に排除し、Pythonで確実に 0x00 を終端に付与
+        python3 -c 'open("payload.spaces", "ab").write(b"\x00")'
+        
         mkfifo serial.in serial.out
         
-        # ケーブルの「入力」側から、ソースコードをOSに向かって流し込み続ける
-        (cat payload.spaces; sleep 5) > serial.in &
+        # ハードウェアの処理速度に合わせた「点滴(Drip-feed)」スクリプトを動的生成
+        cat << 'EOF' > tools/drip_feed.py
+        import sys,time
+        with open("payload.spaces","rb") as f: d=f.read()
+        with open("serial.in","wb",buffering=0) as p:
+         for b in d:
+          p.write(bytes([b]))
+          time.sleep(0.002)
+        EOF
         
-        # ケーブルの「出力」側で、OSが自ら錬成した新世代のバイナリをキャプチャする
+        # バックグラウンドで点滴開始
+        python3 tools/drip_feed.py &
         cat serial.out > serial.bin &
         
-        # パイプをCOM1に物理接続して起動！
-        timeout 5 qemu-system-x86_64 -display none -chardev pipe,id=com1,path=serial -serial chardev:com1 -drive file=seed/voidos_compiler.img,format=raw,index=0,media=disk || true
+        # VM内での1バイトずつのデコードとコンパイルには時間がかかるため、タイムアウトを60秒へ大幅延長！
+        timeout 60 qemu-system-x86_64 -display none -chardev pipe,id=com1,path=serial -serial chardev:com1 -drive file=seed/voidos_compiler.img,format=raw,index=0,media=disk || true
         
         echo "--- Hex Dump of COM1 Serial Output ---"
         od -v -t x1 serial.bin | head -n 10
         
-        # 42(B) 52(R) の後に、コンパイラが吐き出したMBRの先頭(FA 31 C0 8E...)が続くことを確認！
+        # 42(B) 52(R) の後に、コンパイラが吐き出したMBRの先頭(fa31c08ed88e)が続くことを確認！
         if od -v -t x1 serial.bin | tr -d ' \n' | grep -q "fa31c08ed88e"; then
           echo "🎉 SUCCESS! The VoidOS Native Compiler booted, read its own source code via COM1, and emitted the next generation's MBR!"
         else
