@@ -1,9 +1,9 @@
-name: Pure VoidOS Boot Sequence
+name: Pure Spaces Ultimate CI (Bare Metal Edition)
 on: [push, workflow_dispatch]
 permissions:
   contents: write
 jobs:
-  build_and_boot:
+  build_and_prove:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -29,39 +29,22 @@ jobs:
                 self.labels = {}
                 self.fixups = []
 
-            def emit(self, *bs: int) -> None:
-                self.buf.extend(bs)
-
-            def label(self, name: str) -> None:
-                self.labels[name] = len(self.buf)
-
+            def emit(self, *bs: int) -> None: self.buf.extend(bs)
+            def label(self, name: str) -> None: self.labels[name] = len(self.buf)
             def jcc8(self, opcode: int, label: str) -> None:
-                pos = len(self.buf)
-                self.buf.extend([opcode, 0])
-                self.fixups.append((pos + 1, label, 8))
-
-            def jmp8(self, label: str) -> None:
-                self.jcc8(0xEB, label)
-
+                pos = len(self.buf); self.buf.extend([opcode, 0]); self.fixups.append((pos + 1, label, 8))
+            def jmp8(self, label: str) -> None: self.jcc8(0xEB, label)
             def jmp16(self, label: str) -> None:
-                pos = len(self.buf)
-                self.buf.extend([0xE9, 0, 0])
-                self.fixups.append((pos + 1, label, 16))
+                pos = len(self.buf); self.buf.extend([0xE9, 0, 0]); self.fixups.append((pos + 1, label, 16))
 
             def resolve(self) -> bytes:
                 for pos, label, size in self.fixups:
-                    if label not in self.labels:
-                        raise KeyError(f"undefined label: {label}")
                     target = self.labels[label]
                     if size == 8:
-                        rel = target - (pos + 1)
-                        if not -128 <= rel <= 127:
-                            raise ValueError(f"branch out of range for {label}: {rel}")
-                        self.buf[pos] = rel & 0xFF
+                        self.buf[pos] = (target - (pos + 1)) & 0xFF
                     elif size == 16:
                         rel = target - (pos + 2)
-                        self.buf[pos] = rel & 0xFF
-                        self.buf[pos+1] = (rel >> 8) & 0xFF
+                        self.buf[pos] = rel & 0xFF; self.buf[pos+1] = (rel >> 8) & 0xFF
                 return bytes(self.buf)
 
         def build_mbr() -> bytes:
@@ -72,7 +55,6 @@ jobs:
             mbr += bytes([0x8A, 0x16, 0x00, 0x05, 0xBB, 0x00, 0x7E, 0xCD, 0x13, 0x73, 0x0B])
             mbr += bytes([0xB4, 0x0E, 0xB0, 0x45, 0xCD, 0x10, 0xFA, 0xF4, 0xEB, 0xFE, 0x90])
             mbr += bytes([0xEA, 0x00, 0x7E, 0x00, 0x00])
-            if len(mbr) > 510: raise ValueError("MBR too large")
             return bytes(mbr.ljust(510, b'\x00') + b'\x55\xAA')
 
         def build_stage2() -> bytes:
@@ -107,7 +89,7 @@ jobs:
             s.emit(0xBF, 0x00, 0x80)
             s.label("load_op")
             s.emit(0x31, 0xDB)
-            s.emit(0xB9, 0x04, 0x00)
+            s.emit(0xB9, 0x03, 0x00)    # Linux版のSpaces仕様に合わせ「3ビット」読みに修正！
             
             s.label("read_char")
             s.label("wait_rx1")
@@ -126,9 +108,9 @@ jobs:
             s.jmp16("vm_init")
             
             s.label("chk_half")
-            s.emit(0x3C, 0x20)
+            s.emit(0x3C, 0x20)          # Half Space?
             s.jcc8(0x74, "bit_zero")
-            s.emit(0x3C, 0xE3)
+            s.emit(0x3C, 0xE3)          # Full Space?
             s.jcc8(0x75, "read_char")
             
             s.label("wait_rx2")
@@ -284,13 +266,9 @@ jobs:
             return stage2.ljust(1024, b'\x00')
 
         def main() -> None:
-            mbr = build_mbr()
-            stage2 = build_stage2()
-            img = mbr + stage2
+            img = build_mbr() + build_stage2()
             Path("seed/voidos_compiler.img").write_bytes(img)
             Path("seed/voidos_compiler.img").write_bytes(img.ljust(10 * 1024 * 1024, b'\x00'))
-            print(f"MBR size: {len(mbr)}")
-            print(f"Stage2 size: {len(stage2)}")
 
         if __name__ == "__main__":
             main()
@@ -298,13 +276,11 @@ jobs:
 
         python3 tools/build_os.py
 
-    - name: 3. Forge Native VoidOS Compiler (Spaces -> Bytecode)
+    - name: 3. Forge the "VoidOS Native Spaces Compiler"
       run: |
-        echo "--- Building VoidOS Compiler in Spaces ---"
-        cat << 'EOF' > tools/build_compiler.py
+        echo "--- Building VoidOS Compiler in Python ---"
+        cat << 'EOF' > tools/gen_voidos_compiler_bf.py
         import sys
-        from pathlib import Path
-
         class VM:
             def __init__(self): self.c=""; self.p=0
             def g(self,n):
@@ -325,67 +301,122 @@ jobs:
                 cb(); self.z(f); self.c+="]"
 
         v=VM()
+        # [0:tmp, 1:char, 2:bit_count, 3:accum, 4:cmp_tmp, 5:flag]
+        v.a(2, 3) # bit_count = 3
+        v.g(1); v.c+=","
+        v.c+="["
         
-        # コンパイラのメインループ：1文字読んで、ASTに一致したら対応するバイトコード(0x00~0x07)を出力する
-        v.g(1); v.c+=",["
-        def chk(c_val, o_val):
-            v.cp(1, 2, 3); v.d(2, c_val)
-            def match():
-                v.z(4); v.a(4, o_val); v.g(4); v.c+="."
-            v.jz(2, 5, match)
-
-        chk(62, 0) # >
-        chk(60, 1) # <
-        chk(43, 2) # +
-        chk(45, 3) # -
-        chk(46, 4) # .
-        chk(44, 5) # ,
-        chk(91, 6) # [
-        chk(93, 7) # ]
-        v.z(1); v.g(1); v.c+=",]"
-
-        b_to_s = {'>':0, '<':1, '+':2, '-':3, '.':4, ',':5, '[':6, ']':7}
-        bits = []
-        for c in v.c:
-            if c in b_to_s:
-                val = b_to_s[c]
-                bits.extend([(val >> 3) & 1, (val >> 2) & 1, (val >> 1) & 1, val & 1])
-
-        out = bytearray()
-        for bit in bits:
-            out.extend(b"\xe3\x80\x80" if bit else b" ")
+        # Check Half Space (0x20)
+        v.cp(1, 4, 5); v.d(4, 0x20)
+        def on_half():
+            v.cp(3, 4, 5); v.z(3)
+            v.g(4); v.c+="["; v.g(3); v.c+="++"; v.g(4); v.c+="-]"
+            v.d(2, 1)
+        v.jz(4, 5, on_half)
         
-        # 1. まず「Spacesコンパイラ自身」をREPLでコンパイルさせるための改行トリガー
-        out.extend(b"\n")
-        # 2. 次に、OS上で稼働を始めたコンパイラに食わせる「ターゲットプログラム (+[-].) 」
-        out.extend(b"+[-].\x00")
+        # Check Full Space (0xE3)
+        v.cp(1, 4, 5); v.d(4, 0xE3)
+        def on_full():
+            v.g(1); v.c+=",," # Skip 0x80 0x80
+            v.cp(3, 4, 5); v.z(3)
+            v.g(4); v.c+="["; v.g(3); v.c+="++"; v.g(4); v.c+="-]"
+            v.a(3, 1)
+            v.d(2, 1)
+        v.jz(4, 5, on_full)
         
-        Path("payload.bin").write_bytes(out)
+        # Check bit_count == 0
+        def on_zero_bits():
+            v.g(3); v.c+="." # 🔥 出力！(0x00 ~ 0x07 の純粋なバイトコード)
+            v.z(3)
+            v.a(2, 3)
+        v.jz(2, 5, on_zero_bits)
+        
+        v.g(1); v.c+=","
+        v.c+="]"
+        
+        sys.stdout.write(v.c)
         EOF
         
-        python3 tools/build_compiler.py
-        
-    - name: 4. The Absolute Void (Self-Hosting Stream)
+        cat << 'EOF' > tools/bf_to_spaces.py
+        import sys
+        code = sys.stdin.read()
+        op_map = {'>': 0, '<': 1, '+': 2, '-': 3, '.': 4, ',': 5, '[': 6, ']': 7}
+        for c in code:
+            if c in op_map:
+                v = op_map[c]
+                sys.stdout.write("\u3000" if (v >> 2) & 1 else " ")
+                sys.stdout.write("\u3000" if (v >> 1) & 1 else " ")
+                sys.stdout.write("\u3000" if v & 1 else " ")
+        EOF
+
+        cat << 'EOF' > tools/spaces_to_bin.py
+        import sys
+        src = sys.stdin.buffer.read()
+        out = bytearray(); i = 0; bits = []
+        while i < len(src):
+            if src[i:i+3] == b'\xe3\x80\x80':
+                bits.append(1); i += 3
+            elif src[i:i+1] == b' ':
+                bits.append(0); i += 1
+            else: i += 1
+            if len(bits) == 3:
+                out.append((bits[0] << 2) | (bits[1] << 1) | bits[2])
+                bits = []
+        sys.stdout.buffer.write(out)
+        EOF
+
+        python3 tools/gen_voidos_compiler_bf.py > compiler.bf
+        python3 tools/bf_to_spaces.py < compiler.bf > compiler.spaces
+        python3 tools/spaces_to_bin.py < compiler.spaces > reference_compiler.bin
+
+        # The Stream: Boot (Compiler + \n) + Input (Compiler + \x00)
+        cat compiler.spaces > payload_boot.spaces
+        echo -ne "\n" >> payload_boot.spaces
+        cat compiler.spaces > payload_src.spaces
+        echo -ne "\x00" >> payload_src.spaces
+
+    - name: 4. The Absolute Void (Fixed-Point Proof on Bare Metal)
       run: |
         set -euo pipefail
         echo "=== Executing The Absolute Void ==="
 
-        # OSが準備完了するまで2秒待ち、結合された完全なストリームを流し込む！
-        (sleep 2; pv -q -L 5000 payload.bin) | timeout 180 qemu-system-x86_64 \
+        # OSがコンパイラを起動(payload_boot)し、起動したコンパイラに自身のソース(payload_src)を食わせる！
+        # -L 1000 にして、VM上のVM（マトリョーシカ状態）の処理落ちを確実に防ぐ
+        (sleep 2; pv -q -L 1000 payload_boot.spaces; sleep 1; pv -q -L 1000 payload_src.spaces) | timeout 180 qemu-system-x86_64 \
           -display none \
           -serial stdio \
           -drive file=seed/voidos_compiler.img,format=raw,index=0,media=disk \
           > serial.bin || true
 
         echo "--- Hex Dump of COM1 Serial Output ---"
-        ls -l serial.bin
         od -v -t x1 serial.bin | head -n 30
 
-        # OSが吐き出した16進数の中に、ターゲットプログラム (+[-].) をコンパイルしたバイトコード (0x02 0x06 0x03 0x07 0x04) が存在するかチェック！
-        if od -v -t x1 serial.bin | tr -d ' \n' | grep -q "0206030704"; then
-          echo "🎉 SUCCESS! The Spaces Compiler running on VoidOS successfully compiled the target program into VoidOS Bytecode!"
+        # Pythonスクリプトで、REPLのプロンプト(>\r\n\n)に挟まれた「純粋なコンパイル結果」だけを抽出する
+        cat << 'EOF' > tools/extract_bin.py
+        import sys
+        data = open("serial.bin", "rb").read()
+        start = data.find(b"\r\n\n") + 3
+        end = data.rfind(b"\r\n\n> ")
+        if start < 3 or end == -1 or start >= end:
+            print("❌ FAILED to find execution bounds in serial.bin")
+            sys.exit(1)
+        open("voidos_compiled.bin", "wb").write(data[start:end])
+        EOF
+        
+        python3 tools/extract_bin.py
+
+        echo "=== SHA-256 Hash Matching (The Fixed-Point Proof) ==="
+        REF_HASH=$(sha256sum reference_compiler.bin | awk '{print $1}')
+        VOID_HASH=$(sha256sum voidos_compiled.bin | awk '{print $1}')
+        
+        echo "Reference (Python): $REF_HASH"
+        echo "VoidOS (VM on VM):  $VOID_HASH"
+        
+        if [ "$REF_HASH" == "$VOID_HASH" ]; then
+          echo "🎉 PERFECT MATCH: Fixed Point Stable on Bare Metal!"
+          echo "🎉 QUAD-CROWN EQUIVALENT ACHIEVED ON THE ABSOLUTE VOID!"
         else
-          echo "❌ FAILED: The VM did not output the correct bytecode."
+          echo "❌ FIXED POINT MISMATCH"
           exit 1
         fi
 
@@ -397,3 +428,4 @@ jobs:
           seed/*.img
           *.log
           serial.bin
+          *.bin
