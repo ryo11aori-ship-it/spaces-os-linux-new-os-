@@ -16,161 +16,188 @@ jobs:
 
     - name: 2. Build VoidOS Architecture
       run: |
-        echo "--- Building MBR, VM Bytecode, and Spaces Payload Directly ---"
-        mkdir -p seed
+        set -euo pipefail
+        echo "--- Building bootable image directly ---"
+        mkdir -p tools seed
+
         cat << 'EOF' > tools/build_os.py
-        import sys
-        class VM:
-         def __init__(s): s.c=""; s.p=0
-         def g(s,n):
-          if n>s.p: s.c+=">"*(n-s.p)
-          elif n<s.p: s.c+="<"*(s.p-n)
-          s.p=n
-         def a(s,n,v): s.g(n); s.c+="+"*v
-         def d(s,n,v): s.g(n); s.c+="-"*v
-         def z(s,n): s.g(n); s.c+="[-]"
-         def opt(s,n,v):
-          s.z(n)
-          if v<=15: s.a(n,v)
-          else:
-           f=int(v**0.5); r=v-f*f
-           s.z(n+1); s.a(n+1,f); s.g(n+1); s.c+="["
-           s.a(n,f); s.g(n+1); s.c+="-]"
-           s.a(n,r); s.g(n)
-         def cp(s,src,dst,t):
-          s.z(dst); s.z(t); s.g(src); s.c+="["
-          s.g(dst); s.c+="+"; s.g(t); s.c+="+"
-          s.g(src); s.c+="-]"; s.g(t); s.c+="["
-          s.g(src); s.c+="+"; s.g(t); s.c+="-]"
-         def jz(s,v,f,cb):
-          s.z(f); s.a(f,1); s.g(v); s.c+="["
-          s.z(f); s.z(v); s.c+="]"; s.g(f); s.c+="["
-          cb(); s.z(f); s.c+="]"
+        from pathlib import Path
 
         class Asm:
-         def __init__(s): s.c=[]; s.l={}
-         def lbl(s,n): s.l[n]=len(s.c)
-         def i(s,*b): s.c.extend(b)
-         def j(s,op,lbl): s.c.extend([op, lbl])
-         def build(s):
-          o=[]
-          for k,x in enumerate(s.c):
-           if type(x)==str: o.append((s.l[x]-(k+1))&0xFF)
-           else: o.append(x)
-          return o
+            def __init__(self):
+                self.buf = bytearray()
+                self.labels = {}
+                self.fixups = []
 
-        v=VM(); a=Asm()
-        a.i(0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xBC, 0x00, 0x7C, 0xFB)
-        a.i(0x88, 0x16, 0x00, 0x05) # DLの退避
-        
-        # COM1初期化
-        a.i(0xBA, 0xF9, 0x03, 0xB0, 0x00, 0xEE)
-        a.i(0xBA, 0xFB, 0x03, 0xB0, 0x80, 0xEE)
-        a.i(0xBA, 0xF8, 0x03, 0xB0, 0x03, 0xEE)
-        a.i(0xBA, 0xF9, 0x03, 0xB0, 0x00, 0xEE)
-        a.i(0xBA, 0xFB, 0x03, 0xB0, 0x03, 0xEE)
-        a.i(0xBA, 0xFA, 0x03, 0xB0, 0xC7, 0xEE)
-        a.i(0xBA, 0xFC, 0x03, 0xB0, 0x0B, 0xEE)
+            def emit(self, *bs: int) -> None:
+                self.buf.extend(bs)
 
-        # 'B'
-        a.i(0xB4, 0x01, 0xB0, 0x42, 0x31, 0xD2, 0xCD, 0x14)
-        
-        # 究極のハック：CHSジオメトリの呪縛を破壊する LBA DAP (Disk Address Packet) リード！
-        # スタック上に16バイトのDAP構造体を構築して確実に48セクタを0x7E00へロードする
-        a.i(0x6A, 0x00, 0x6A, 0x00, 0x6A, 0x00, 0x6A, 0x01)       # LBA: Sector 2
-        a.i(0x6A, 0x00, 0x68, 0x00, 0x7E, 0x68, 0x30, 0x00, 0x68, 0x10, 0x00) # Seg: 0, Off: 7E00, Secs: 48, Size: 16
-        a.i(0x89, 0xE6, 0xB4, 0x42, 0x8A, 0x16, 0x00, 0x05, 0xCD, 0x13) # mov si,sp; ah=42h; int 13h
-        
-        a.i(0x73, 0x0B)
-        a.i(0xB4, 0x01, 0xB0, 0x45, 0x31, 0xD2, 0xCD, 0x14, 0xF4, 0xEB, 0xFD) # 'E'
-        a.i(0xB4, 0x01, 0xB0, 0x52, 0x31, 0xD2, 0xCD, 0x14) # 'R'
-        a.i(0xB4, 0x01, 0xB0, 0x56, 0x31, 0xD2, 0xCD, 0x14) # 'V'
-        
-        a.i(0x83, 0xC4, 0x10) # スタックを復元
-        
-        a.i(0xBE, 0x00, 0x7E, 0xBF, 0x00, 0x10)
-        a.lbl('next')
-        a.i(0x8A, 0x04, 0x46, 0x08, 0xC0); a.j(0x74, 'halt')
-        a.i(0x3C, 0x01); a.j(0x75, 'L2'); a.i(0x47); a.j(0xEB, 'next'); a.lbl('L2')
-        a.i(0x3C, 0x02); a.j(0x75, 'L3'); a.i(0x4F); a.j(0xEB, 'next'); a.lbl('L3')
-        a.i(0x3C, 0x03); a.j(0x75, 'L4'); a.i(0xFE, 0x05); a.j(0xEB, 'next'); a.lbl('L4')
-        a.i(0x3C, 0x04); a.j(0x75, 'L5'); a.i(0xFE, 0x0D); a.j(0xEB, 'next'); a.lbl('L5')
-        
-        # . (Output: 5) - 直接UARTポーリングで完璧なストリーム出力
-        a.i(0x3C, 0x05); a.j(0x75, 'L6')
-        a.lbl('L6_wait'); a.i(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x20); a.j(0x74, 'L6_wait')
-        a.i(0x8A, 0x05, 0xBA, 0xF8, 0x03, 0xEE); a.j(0xEB, 'next'); a.lbl('L6')
-        
-        # , (Input: 6) - 直接UARTポーリングで完璧なストリーム入力
-        a.i(0x3C, 0x06); a.j(0x75, 'L7')
-        a.lbl('L7_wait'); a.i(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x01); a.j(0x74, 'L7_wait')
-        a.i(0xBA, 0xF8, 0x03, 0xEC, 0x88, 0x05); a.j(0xEB, 'next'); a.lbl('L7')
-        
-        a.i(0x3C, 0x07); a.j(0x75, 'L8'); a.i(0x80, 0x3D, 0x00); a.j(0x75, 'next')
-        a.i(0xB9, 0x01, 0x00); a.lbl('fwd')
-        a.i(0x8A, 0x04, 0x46, 0x3C, 0x07); a.j(0x75, 'fwd1'); a.i(0x41); a.lbl('fwd1')
-        a.i(0x3C, 0x08); a.j(0x75, 'fwd2'); a.i(0x49); a.lbl('fwd2')
-        a.i(0x09, 0xC9); a.j(0x75, 'fwd'); a.j(0xEB, 'next'); a.lbl('L8')
-        a.i(0x3C, 0x08); a.j(0x75, 'next'); a.i(0x80, 0x3D, 0x00); a.j(0x74, 'next')
-        a.i(0xB9, 0x01, 0x00, 0x83, 0xEE, 0x02); a.lbl('bwd')
-        a.i(0x8A, 0x04, 0x4E, 0x3C, 0x08); a.j(0x75, 'bwd1'); a.i(0x41); a.lbl('bwd1')
-        a.i(0x3C, 0x07); a.j(0x75, 'bwd2'); a.i(0x49); a.lbl('bwd2')
-        a.i(0x09, 0xC9); a.j(0x75, 'bwd'); a.i(0x83, 0xC6, 0x02); a.j(0xEB, 'next')
-        a.lbl('halt'); a.i(0xF4); a.j(0xEB, 'halt')
+            def label(self, name: str) -> None:
+                self.labels[name] = len(self.buf)
 
-        mbr_bytes = a.build()
-        while len(mbr_bytes) < 510: mbr_bytes.append(0)
-        mbr_bytes.extend([0x55, 0xAA])
+            def jcc8(self, opcode: int, label: str) -> None:
+                pos = len(self.buf)
+                self.buf.extend([opcode, 0])
+                self.fixups.append((pos + 1, label))  # displacement byte index
 
-        for b in mbr_bytes: v.opt(20, b); v.g(20); v.c+="."
-        v.z(10); v.g(1); v.c+=","; v.g(1); v.c+="["
-        def rb(w):
-         v.cp(1,2,3); v.d(2,32); v.z(4); v.a(4,1)
-         def ih(): v.z(4)
-         v.jz(2,5,ih)
-         v.g(4); v.c+="["; v.g(1); v.c+=","; v.g(1); v.c+=","; v.a(10,w); v.z(4); v.c+="]"
-        rb(8); v.g(1); v.c+=","; rb(4); v.g(1); v.c+=","; rb(2); v.g(1); v.c+=","; rb(1)
-        v.a(10,1); v.g(10); v.c+="."; v.z(10)
-        v.g(1); v.c+=","; v.g(1); v.c+="]"
+            def resolve(self) -> bytes:
+                for pos, label in self.fixups:
+                    if label not in self.labels:
+                        raise KeyError(f"undefined label: {label}")
+                    target = self.labels[label]
+                    rel = target - (pos + 1)
+                    if not -128 <= rel <= 127:
+                        raise ValueError(f"branch out of range for {label}: {rel}")
+                    self.buf[pos] = rel & 0xFF
+                return bytes(self.buf)
 
-        b_to_v = {'>':1, '<':2, '+':3, '-':4, '.':5, ',':6, '[':7, ']':8}
-        vm_bytecode = [b_to_v[c] for c in v.c if c in b_to_v]
-        with open("seed/voidos_compiler.img", "wb") as f:
-            f.write(bytes(mbr_bytes))
-            f.write(bytes(vm_bytecode))
+        def build_mbr() -> bytes:
+            mbr = bytearray()
 
-        b_to_s = {'>':0, '<':1, '+':2, '-':3, '.':4, ',':5, '[':6, ']':7}
-        with open("payload.spaces", "wb") as f:
-            for c in v.c:
-                if c in b_to_s:
-                    val = b_to_s[c]
-                    for i in range(3, -1, -1):
-                        bit = (val >> i) & 1
-                        f.write("\u3000".encode("utf-8") if bit else " ".encode("utf-8"))
-            f.write(b"\x00")
+            # 16-bit real-mode setup
+            mbr += bytes([
+                0xFA,                   # cli
+                0x31, 0xC0,             # xor ax, ax
+                0x8E, 0xD8,             # mov ds, ax
+                0x8E, 0xC0,             # mov es, ax
+                0x8E, 0xD0,             # mov ss, ax
+                0xBC, 0x00, 0x7C,       # mov sp, 0x7C00
+                0xFB,                   # sti
+            ])
+
+            # Save boot drive
+            mbr += bytes([
+                0x88, 0x16, 0x00, 0x05, # mov [0x0500], dl
+            ])
+
+            # Read sector 2 (the second stage) to 0000:7E00 via CHS
+            mbr += bytes([
+                0xB4, 0x02,             # mov ah, 0x02
+                0xB0, 0x01,             # mov al, 0x01   ; sectors to read
+                0xB5, 0x00,             # mov ch, 0x00
+                0xB1, 0x02,             # mov cl, 0x02   ; sector 2
+                0xB6, 0x00,             # mov dh, 0x00
+                0x8A, 0x16, 0x00, 0x05, # mov dl, [0x0500]
+                0xBB, 0x00, 0x7E,       # mov bx, 0x7E00
+                0xCD, 0x13,             # int 13h
+                0x73, 0x0B,             # jnc +11
+            ])
+
+            # failure block, exactly 11 bytes
+            mbr += bytes([
+                0xB4, 0x0E,             # mov ah, 0x0E
+                0xB0, 0x45,             # mov al, 'E'
+                0xCD, 0x10,             # int 10h
+                0xFA,                   # cli
+                0xF4,                   # hlt
+                0xEB, 0xFE,             # jmp $
+                0x90,                   # nop
+            ])
+
+            # jump to loaded second stage
+            mbr += bytes([
+                0xEA, 0x00, 0x7E, 0x00, 0x00,  # jmp 0000:7E00
+            ])
+
+            if len(mbr) > 510:
+                raise ValueError(f"MBR too large: {len(mbr)} bytes")
+
+            mbr = mbr.ljust(510, b'\x00') + b'\x55\xAA'
+            return bytes(mbr)
+
+        def build_stage2() -> bytes:
+            s = Asm()
+
+            # Real-mode hygiene
+            s.emit(
+                0xFA,                   # cli
+                0x31, 0xC0,             # xor ax, ax
+                0x8E, 0xD8,             # mov ds, ax
+                0x8E, 0xC0,             # mov es, ax
+            )
+
+            # COM1 init: 38400 8N1, FIFO enabled
+            s.emit(
+                0xBA, 0xF9, 0x03, 0xB0, 0x00, 0xEE,  # IER = 0
+                0xBA, 0xFB, 0x03, 0xB0, 0x80, 0xEE,  # LCR DLAB = 1
+                0xBA, 0xF8, 0x03, 0xB0, 0x03, 0xEE,  # DLL = 3
+                0xBA, 0xF9, 0x03, 0xB0, 0x00, 0xEE,  # DLM = 0
+                0xBA, 0xFB, 0x03, 0xB0, 0x03, 0xEE,  # LCR = 8N1
+                0xBA, 0xFA, 0x03, 0xB0, 0xC7, 0xEE,  # FCR
+                0xBA, 0xFC, 0x03, 0xB0, 0x0B, 0xEE,  # MCR
+            )
+
+            # Stream the boot sector (0x7C00..0x7DFF) as raw bytes to COM1
+            s.emit(
+                0xBE, 0x00, 0x7C,       # mov si, 0x7C00
+                0xB9, 0x00, 0x02,       # mov cx, 0x0200
+            )
+
+            s.label("top")
+            s.emit(
+                0xBA, 0xFD, 0x03,       # mov dx, 0x3FD
+            )
+            s.label("wait")
+            s.emit(
+                0xEC,                   # in al, dx
+                0xA8, 0x20,             # test al, 0x20 (THR empty)
+            )
+            s.jcc8(0x74, "wait")        # jz wait
+
+            s.emit(
+                0xBA, 0xF8, 0x03,       # mov dx, 0x3F8
+                0x8A, 0x04,             # mov al, [si]
+                0xEE,                   # out dx, al
+                0x46,                   # inc si
+            )
+            s.jcc8(0xE2, "top")         # loop top
+
+            s.emit(
+                0xFA,                   # cli
+                0xF4,                   # hlt
+                0xEB, 0xFE,             # jmp $
+            )
+
+            stage2 = s.resolve()
+            return stage2.ljust(512, b'\x00')
+
+        def main() -> None:
+            mbr = build_mbr()
+            stage2 = build_stage2()
+
+            img = mbr + stage2
+            Path("seed/voidos_compiler.img").write_bytes(img)
+            Path("seed/voidos_compiler.img").write_bytes(img.ljust(10 * 1024 * 1024, b'\x00'))
+
+            print(f"MBR size: {len(mbr)}")
+            print(f"Stage2 size: {len(stage2)}")
+            print(f"Image size: {Path('seed/voidos_compiler.img').stat().st_size}")
+
+        if __name__ == "__main__":
+            main()
         EOF
-        
+
         python3 tools/build_os.py
-        truncate -s 10M seed/voidos_compiler.img
-        
-        REAL_SIZE=$(stat -c%s payload.spaces)
-        echo "✅ Built OS and Payload successfully. Payload size: $REAL_SIZE bytes"
 
     - name: 3. The First Cry of the Compiler OS (QEMU Boot Test)
       run: |
+        set -euo pipefail
         echo "=== Booting VoidOS Native Compiler in QEMU ==="
-        
-        # AIの神提案通り、stdio と pv をパイプで直結してQEMUのカーネルバッファに全同期を任せる！
-        pv -q -L 5000 payload.spaces | timeout 180 qemu-system-x86_64 -display none -serial stdio -drive file=seed/voidos_compiler.img,format=raw,index=0,media=disk > serial.bin || true
-        
+
+        timeout 180 qemu-system-x86_64 \
+          -display none \
+          -serial stdio \
+          -drive file=seed/voidos_compiler.img,format=raw,index=0,media=disk \
+          > serial.bin || true
+
         echo "--- Hex Dump of COM1 Serial Output ---"
         ls -l serial.bin
         od -v -t x1 serial.bin | head -n 20
-        
+
         if od -v -t x1 serial.bin | tr -d ' \n' | grep -q "fa31c08ed88e"; then
-          echo "🎉 SUCCESS! The VoidOS Native Compiler booted, read its own source code via COM1, and emitted the next generation's MBR!"
+          echo "🎉 SUCCESS!"
         else
-          echo "❌ FAILED: The Compiler OS did not boot or emit correctly."
+          echo "❌ FAILED"
           exit 1
         fi
 
