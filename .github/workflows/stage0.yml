@@ -75,24 +75,24 @@ jobs:
                 0xBA, 0xFC, 0x03, 0xB0, 0x0B, 0xEE,
             )
 
-            # === REPL Start (ステータスチェック後に文字をセットするよう修正！) ===
+            # === REPL Start ===
             s.label("repl_start")
             s.label("wait_gt")
             s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x20)
             s.jcc8(0x74, "wait_gt")
-            s.emit(0xB0, 0x3E)          # '>' をセット
+            s.emit(0xB0, 0x3E)          # '>'
             s.emit(0xBA, 0xF8, 0x03, 0xEE)
             
             s.label("wait_spc")
             s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x20)
             s.jcc8(0x74, "wait_spc")
-            s.emit(0xB0, 0x20)          # ' ' をセット
+            s.emit(0xB0, 0x20)          # ' '
             s.emit(0xBA, 0xF8, 0x03, 0xEE)
 
             s.emit(0xBF, 0x00, 0x80)
             s.label("load_op")
             s.emit(0x31, 0xDB)
-            s.emit(0xB9, 0x03, 0x00)    # Linux版Spaces仕様の3ビット読みに対応
+            s.emit(0xB9, 0x03, 0x00)    # Linux版のSpaces仕様に合わせ「3ビット」読み
             
             s.label("read_char")
             s.label("wait_rx1")
@@ -139,7 +139,7 @@ jobs:
             s.emit(0x88, 0x1D, 0x47)
             s.jmp16("load_op")
 
-            # === REPLの改行処理 (ステータスチェック後に文字をセットするよう修正) ===
+            # === REPL Execution Init ===
             s.label("vm_init")
             s.label("wait_cr1")
             s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x20)
@@ -328,12 +328,13 @@ jobs:
             v.d(2, 1)
         v.jz(4, 5, on_full)
         
-        # Check bit_count == 0
+        # 【修正】bit_count(cell 2)を一時変数(cell 4)にコピーしてからチェックする！
+        v.cp(2, 4, 5)
         def on_zero_bits():
             v.g(3); v.c+="." # 🔥 出力！(0x00 ~ 0x07 の純粋なバイトコード)
             v.z(3)
             v.a(2, 3)
-        v.jz(2, 5, on_zero_bits)
+        v.jz(4, 5, on_zero_bits)
         
         v.g(1); v.c+=","
         v.c+="]"
