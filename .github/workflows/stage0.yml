@@ -102,7 +102,6 @@ jobs:
         v.opt(20, 0x55); v.g(20); v.c+="."
         v.opt(20, 0xAA); v.g(20); v.c+="."
 
-        # 究極のハック：UTF-8ビットストリーム・デコーダ回路
         v.z(10)
         v.g(1); v.c+=","
         v.g(1); v.c+="["
@@ -233,7 +232,6 @@ jobs:
         v.a(10,1); v.g(10); v.c+="."; v.z(10)
         v.g(1); v.c+=","; v.g(1); v.c+="]"
         
-        # 妥協なし！ 純粋なSpaces言語として出力！
         for x in v.c: c(x)
         EOF
         python3 tools/forge_compiler_direct.py > src/voidos_compiler.spaces
@@ -242,11 +240,7 @@ jobs:
     - name: 5. Bootstrap OS Compiler Image
       run: |
         echo "--- Oracle VM compiles the VoidOS Native Compiler ---"
-        # 完全に純化されたSpacesファイル(UTF-8)をコンパイル！
         ./bin/ref_vm src/compiler.spaces < src/voidos_compiler.spaces > seed/voidos_compiler.img
-        
-        REAL_SIZE=$(stat -c%s seed/voidos_compiler.img)
-        echo "Real payload size: $REAL_SIZE bytes"
         
         truncate -s 10M seed/voidos_compiler.img
         
@@ -256,13 +250,29 @@ jobs:
     - name: 6. The First Cry of the Compiler OS (QEMU Boot Test)
       run: |
         echo "=== Booting VoidOS Native Compiler in QEMU ==="
-        timeout 5 qemu-system-x86_64 -display none -serial file:serial.bin -drive file=seed/voidos_compiler.img,format=raw,index=0,media=disk || true
+        
+        # 【重要】コンパイラが「ソースコードの終わり」を認識してループを抜けられるように null バイトを追加
+        cp src/voidos_compiler.spaces payload.spaces
+        echo -ne '\x00' >> payload.spaces
+        
+        # 仮想のシリアルケーブル（双方向パイプ）を作成
+        mkfifo serial.in serial.out
+        
+        # ケーブルの「入力」側から、ソースコードをOSに向かって流し込み続ける
+        (cat payload.spaces; sleep 5) > serial.in &
+        
+        # ケーブルの「出力」側で、OSが自ら錬成した新世代のバイナリをキャプチャする
+        cat serial.out > serial.bin &
+        
+        # パイプをCOM1に物理接続して起動！
+        timeout 5 qemu-system-x86_64 -display none -chardev pipe,id=com1,path=serial -serial chardev:com1 -drive file=seed/voidos_compiler.img,format=raw,index=0,media=disk || true
         
         echo "--- Hex Dump of COM1 Serial Output ---"
         od -v -t x1 serial.bin | head -n 10
         
+        # 42(B) 52(R) の後に、コンパイラが吐き出したMBRの先頭(FA 31 C0 8E...)が続くことを確認！
         if od -v -t x1 serial.bin | tr -d ' \n' | grep -q "fa31c08ed88e"; then
-          echo "🎉 SUCCESS! The VoidOS Native Compiler booted and emitted the next generation's MBR!"
+          echo "🎉 SUCCESS! The VoidOS Native Compiler booted, read its own source code via COM1, and emitted the next generation's MBR!"
         else
           echo "❌ FAILED: The Compiler OS did not boot or emit correctly."
           exit 1
