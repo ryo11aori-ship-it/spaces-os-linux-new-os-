@@ -71,15 +71,10 @@ jobs:
 
         v=VM(); a=Asm()
         a.i(0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xBC, 0x00, 0x7C, 0xFB)
-        
-        # COM1初期化とデバッグ信号(BIOS使用)
         a.i(0xB4, 0x00, 0xB0, 0xE3, 0x31, 0xD2, 0xCD, 0x14)
         a.i(0xB4, 0x01, 0xB0, 0x42, 0x31, 0xD2, 0xCD, 0x14)
-        
-        # 48セクタ読み込み
         a.i(0xB4, 0x02, 0xB0, 0x30, 0xB5, 0x00, 0xB1, 0x02, 0xB6, 0x00, 0xB2, 0x80, 0xBB, 0x00, 0x7E, 0xCD, 0x13)
         a.i(0xB4, 0x01, 0xB0, 0x52, 0x31, 0xD2, 0xCD, 0x14)
-        
         a.i(0xBE, 0x00, 0x7E, 0xBF, 0x00, 0x10)
         a.lbl('next')
         a.i(0x8A, 0x04, 0x46, 0x08, 0xC0); a.j(0x74, 'halt')
@@ -88,13 +83,10 @@ jobs:
         a.i(0x3C, 0x03); a.j(0x75, 'L4'); a.i(0xFE, 0x05); a.j(0xEB, 'next'); a.lbl('L4')
         a.i(0x3C, 0x04); a.j(0x75, 'L5'); a.i(0xFE, 0x0D); a.j(0xEB, 'next'); a.lbl('L5')
         
-        # 究極のハック：BIOSを捨て、直接I/Oポート(0x3F8)を叩いてハードウェアを完全制御！
-        # . (Output: 5)
         a.i(0x3C, 0x05); a.j(0x75, 'L6')
         a.lbl('L6_wait'); a.i(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x20); a.j(0x74, 'L6_wait')
         a.i(0x8A, 0x05, 0xBA, 0xF8, 0x03, 0xEE); a.j(0xEB, 'next'); a.lbl('L6')
         
-        # , (Input: 6) - 偽のEOFを防止する無限監視ポーリング！
         a.i(0x3C, 0x06); a.j(0x75, 'L7')
         a.lbl('L7_wait'); a.i(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x01); a.j(0x74, 'L7_wait')
         a.i(0xBA, 0xF8, 0x03, 0xEC, 0x88, 0x05); a.j(0xEB, 'next'); a.lbl('L7')
@@ -280,19 +272,12 @@ jobs:
         
         mkfifo serial.in serial.out
         
-        cat << 'EOF' > tools/drip_feed.py
-        import sys,time
-        with open("payload.spaces","rb") as f: d=f.read()
-        with open("serial.in","wb",buffering=0) as p:
-         for b in d:
-          p.write(bytes([b]))
-          time.sleep(0.001)  # 転送速度を2倍(1ms)にアップ！
-        EOF
-        
-        python3 tools/drip_feed.py &
+        # 究極のハック：パイプの天然の背圧を利用し、OSの処理限界速度で一気に全データを流し込む！
+        # 1秒待ってQEMUの起動とパイプの接続を確実に担保する
+        (sleep 1; cat payload.spaces > serial.in) &
         cat serial.out > serial.bin &
         
-        # タイムアウトを 180秒(3分) に延長し、ベアメタル上での全文字デコードの完了を待つ！
+        # OSはネイティブの全力速度でデコードを行うため、180秒のタイムアウトで十分完走する！
         timeout 180 qemu-system-x86_64 -display none -chardev pipe,id=com1,path=serial -serial chardev:com1 -drive file=seed/voidos_compiler.img,format=raw,index=0,media=disk || true
         
         echo "--- Hex Dump of COM1 Serial Output ---"
