@@ -54,49 +54,44 @@ jobs:
         def build_mbr() -> bytes:
             mbr = bytearray()
 
-            # 16-bit real-mode setup
             mbr += bytes([
-                0xFA,                   # cli
-                0x31, 0xC0,             # xor ax, ax
-                0x8E, 0xD8,             # mov ds, ax
-                0x8E, 0xC0,             # mov es, ax
-                0x8E, 0xD0,             # mov ss, ax
-                0xBC, 0x00, 0x7C,       # mov sp, 0x7C00
-                0xFB,                   # sti
+                0xFA,
+                0x31, 0xC0,
+                0x8E, 0xD8,
+                0x8E, 0xC0,
+                0x8E, 0xD0,
+                0xBC, 0x00, 0x7C,
+                0xFB,
             ])
 
-            # Save boot drive
             mbr += bytes([
-                0x88, 0x16, 0x00, 0x05, # mov [0x0500], dl
+                0x88, 0x16, 0x00, 0x05,
             ])
 
-            # Read sector 2 (the second stage) to 0000:7E00 via CHS
             mbr += bytes([
-                0xB4, 0x02,             # mov ah, 0x02
-                0xB0, 0x01,             # mov al, 0x01   ; sectors to read
-                0xB5, 0x00,             # mov ch, 0x00
-                0xB1, 0x02,             # mov cl, 0x02   ; sector 2
-                0xB6, 0x00,             # mov dh, 0x00
-                0x8A, 0x16, 0x00, 0x05, # mov dl, [0x0500]
-                0xBB, 0x00, 0x7E,       # mov bx, 0x7E00
-                0xCD, 0x13,             # int 13h
-                0x73, 0x0B,             # jnc +11
+                0xB4, 0x02,
+                0xB0, 0x01,
+                0xB5, 0x00,
+                0xB1, 0x02,
+                0xB6, 0x00,
+                0x8A, 0x16, 0x00, 0x05,
+                0xBB, 0x00, 0x7E,
+                0xCD, 0x13,
+                0x73, 0x0B,
             ])
 
-            # failure block
             mbr += bytes([
-                0xB4, 0x0E,             # mov ah, 0x0E
-                0xB0, 0x45,             # mov al, 'E'
-                0xCD, 0x10,             # int 10h
-                0xFA,                   # cli
-                0xF4,                   # hlt
-                0xEB, 0xFE,             # jmp $
-                0x90,                   # nop
+                0xB4, 0x0E,
+                0xB0, 0x45,
+                0xCD, 0x10,
+                0xFA,
+                0xF4,
+                0xEB, 0xFE,
+                0x90,
             ])
 
-            # jump to loaded second stage
             mbr += bytes([
-                0xEA, 0x00, 0x7E, 0x00, 0x00,  # jmp 0000:7E00
+                0xEA, 0x00, 0x7E, 0x00, 0x00,
             ])
 
             if len(mbr) > 510:
@@ -108,61 +103,51 @@ jobs:
         def build_stage2() -> bytes:
             s = Asm()
 
-            # Real-mode hygiene
             s.emit(
-                0xFA,                   # cli
-                0x31, 0xC0,             # xor ax, ax
-                0x8E, 0xD8,             # mov ds, ax
-                0x8E, 0xC0,             # mov es, ax
+                0xFA,
+                0x31, 0xC0,
+                0x8E, 0xD8,
+                0x8E, 0xC0,
             )
 
-            # COM1 init: 38400 8N1, FIFO enabled
             s.emit(
-                0xBA, 0xF9, 0x03, 0xB0, 0x00, 0xEE,  # IER = 0
-                0xBA, 0xFB, 0x03, 0xB0, 0x80, 0xEE,  # LCR DLAB = 1
-                0xBA, 0xF8, 0x03, 0xB0, 0x03, 0xEE,  # DLL = 3
-                0xBA, 0xF9, 0x03, 0xB0, 0x00, 0xEE,  # DLM = 0
-                0xBA, 0xFB, 0x03, 0xB0, 0x03, 0xEE,  # LCR = 8N1
-                0xBA, 0xFA, 0x03, 0xB0, 0xC7, 0xEE,  # FCR
-                0xBA, 0xFC, 0x03, 0xB0, 0x0B, 0xEE,  # MCR
+                0xBA, 0xF9, 0x03, 0xB0, 0x00, 0xEE,
+                0xBA, 0xFB, 0x03, 0xB0, 0x80, 0xEE,
+                0xBA, 0xF8, 0x03, 0xB0, 0x03, 0xEE,
+                0xBA, 0xF9, 0x03, 0xB0, 0x00, 0xEE,
+                0xBA, 0xFB, 0x03, 0xB0, 0x03, 0xEE,
+                0xBA, 0xFA, 0x03, 0xB0, 0xC7, 0xEE,
+                0xBA, 0xFC, 0x03, 0xB0, 0x0B, 0xEE,
             )
 
-            # === エコーサーバのメインループ ===
             s.label("loop")
             
-            # 受信(RX)待ち
             s.label("wait_rx")
-            s.emit(0xBA, 0xFD, 0x03)    # mov dx, 0x3FD (LSR)
-            s.emit(0xEC)                # in al, dx
-            s.emit(0xA8, 0x01)          # test al, 1 (Data Ready)
-            s.jcc8(0x74, "wait_rx")     # jz wait_rx
+            s.emit(0xBA, 0xFD, 0x03)
+            s.emit(0xEC)
+            s.emit(0xA8, 0x01)
+            s.jcc8(0x74, "wait_rx")
             
-            # 1バイト読み込み
-            s.emit(0xBA, 0xF8, 0x03)    # mov dx, 0x3F8 (RX Buffer)
-            s.emit(0xEC)                # in al, dx
+            s.emit(0xBA, 0xF8, 0x03)
+            s.emit(0xEC)
             
-            # 0x00(EOF)なら終了処理へ
-            s.emit(0x08, 0xC0)          # or al, al
-            s.jcc8(0x74, "halt")        # jz halt
+            s.emit(0x08, 0xC0)
+            s.jcc8(0x74, "halt")
             
-            # 読み込んだバイトを一旦CLに退避
-            s.emit(0x88, 0xC1)          # mov cl, al
+            s.emit(0x88, 0xC1)
             
-            # 送信(TX)バッファ空き待ち
             s.label("wait_tx")
-            s.emit(0xBA, 0xFD, 0x03)    # mov dx, 0x3FD (LSR)
-            s.emit(0xEC)                # in al, dx
-            s.emit(0xA8, 0x20)          # test al, 0x20 (THR Empty)
-            s.jcc8(0x74, "wait_tx")     # jz wait_tx
+            s.emit(0xBA, 0xFD, 0x03)
+            s.emit(0xEC)
+            s.emit(0xA8, 0x20)
+            s.jcc8(0x74, "wait_tx")
             
-            # 退避したバイトをALに戻して送信！
-            s.emit(0x88, 0xC8)          # mov al, cl
-            s.emit(0xBA, 0xF8, 0x03)    # mov dx, 0x3F8 (TX Buffer)
-            s.emit(0xEE)                # out dx, al
+            s.emit(0x88, 0xC8)
+            s.emit(0xBA, 0xF8, 0x03)
+            s.emit(0xEE)
             
-            s.jcc8(0xEB, "loop")        # jmp loop
+            s.jcc8(0xEB, "loop")
 
-            # 終了処理 (halt)
             s.label("halt")
             s.emit(0xFA, 0xF4, 0xEB, 0xFE)
 
@@ -177,7 +162,6 @@ jobs:
             Path("seed/voidos_compiler.img").write_bytes(img)
             Path("seed/voidos_compiler.img").write_bytes(img.ljust(10 * 1024 * 1024, b'\x00'))
 
-            # テスト用のペイロード(Hello, VoidOS! + EOF)を生成
             payload = b"Hello, VoidOS!\n" + b"\x00"
             Path("payload.txt").write_bytes(payload)
 
@@ -195,8 +179,8 @@ jobs:
         set -euo pipefail
         echo "=== Booting VoidOS Native Compiler in QEMU ==="
 
-        # pvを使ってペイロードを流し込む。エコーが返ってくれば成功！
-        pv -q -L 5000 payload.txt | timeout 180 qemu-system-x86_64 \
+        # 究極のハック：QEMUが起動し、OSが「UART初期化(バッファクリア)」を終えるまで2秒待ってから、pvでストリームを開始する！
+        (sleep 2; pv -q -L 5000 payload.txt) | timeout 180 qemu-system-x86_64 \
           -display none \
           -serial stdio \
           -drive file=seed/voidos_compiler.img,format=raw,index=0,media=disk \
@@ -206,7 +190,6 @@ jobs:
         ls -l serial.bin
         od -v -t c serial.bin | head -n 20
 
-        # 送信した文字列がそのまま受信(シリアル出力)されているか確認！
         if grep -q "Hello, VoidOS!" serial.bin; then
           echo "🎉 SUCCESS! The OS successfully echoed the input string!"
         else
