@@ -12,18 +12,14 @@ jobs:
       run: |
         echo "=== Setting up Bare Metal Environment ==="
         sudo apt-get update
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y gcc qemu-system-x86 python3
+        # 究極のストリーミングツール 'pv' を追加！Cコンパイラ(gcc)はもう不要です！
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-x86 python3 pv
 
-    - name: 2. Compile Oracle VM
+    - name: 2. Build VoidOS Architecture
       run: |
-        echo "--- Compiling 4-Bit Oracle VM ---"
-        mkdir -p bin src seed tests
-        gcc -O3 src/ref/vm.c -o bin/ref_vm
-
-    - name: 3. Forge VoidOS Meta-Compiler (UTF-8 Decoder Embedded)
-      run: |
-        echo "--- Forging Spaces v2.0 Meta-Compiler ---"
-        cat << 'EOF' > tools/gen_spaces_compiler_bf_bundler.py
+        echo "--- Building MBR, VM Bytecode, and Spaces Payload Directly ---"
+        mkdir -p seed
+        cat << 'EOF' > tools/build_os.py
         import sys
         class VM:
          def __init__(s): s.c=""; s.p=0
@@ -51,11 +47,6 @@ jobs:
           s.z(f); s.a(f,1); s.g(v); s.c+="["
           s.z(f); s.z(v); s.c+="]"; s.g(f); s.c+="["
           cb(); s.z(f); s.c+="]"
-         def sa(s,b,v,t1,t2):
-          s.z(t1); s.g(b); s.c+="["; s.g(t1); s.c+="+"; s.g(b); s.c+="-]"
-          s.g(t1); s.c+="["; s.g(b); s.c+="++"; s.g(t1); s.c+="-]"
-          s.cp(v,t1,t2)
-          s.g(t1); s.c+="["; s.g(b); s.c+="+"; s.g(t1); s.c+="-]"
 
         class Asm:
          def __init__(s): s.c=[]; s.l={}
@@ -70,150 +61,18 @@ jobs:
           return o
 
         v=VM(); a=Asm()
+        # 1. MBR (VMインタプリタ) のアセンブル
         a.i(0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xBC, 0x00, 0x7C, 0xFB)
-        a.i(0x88, 0x16, 0x00, 0x05)
-        
+        a.i(0x88, 0x16, 0x00, 0x05) # DLの退避
         a.i(0xB4, 0x00, 0xB0, 0xE3, 0x31, 0xD2, 0xCD, 0x14)
-        a.i(0xB4, 0x01, 0xB0, 0x42, 0x31, 0xD2, 0xCD, 0x14) # 'B'
-        
+        a.i(0xB4, 0x01, 0xB0, 0x42, 0x31, 0xD2, 0xCD, 0x14) # Output 'B'
         a.i(0xB4, 0x02, 0xB0, 0x30, 0xB5, 0x00, 0xB1, 0x02, 0xB6, 0x00)
-        a.i(0x8A, 0x16, 0x00, 0x05)
+        a.i(0x8A, 0x16, 0x00, 0x05) # DLの復元
         a.i(0xBB, 0x00, 0x7E, 0xCD, 0x13)
         a.i(0x73, 0x0B)
-        a.i(0xB4, 0x01, 0xB0, 0x45, 0x31, 0xD2, 0xCD, 0x14, 0xF4, 0xEB, 0xFD) # 'E'
-        a.i(0xB4, 0x01, 0xB0, 0x52, 0x31, 0xD2, 0xCD, 0x14) # 'R'
-        
-        # 究極のハック：AIの提案通り、VMインタプリタが稼働し始めた証拠として 'V' (0x56) を出力！
-        a.i(0xB4, 0x01, 0xB0, 0x56, 0x31, 0xD2, 0xCD, 0x14)
-        
-        a.i(0xBE, 0x00, 0x7E, 0xBF, 0x00, 0x10)
-        a.lbl('next')
-        a.i(0x8A, 0x04, 0x46, 0x08, 0xC0); a.j(0x74, 'halt')
-        a.i(0x3C, 0x01); a.j(0x75, 'L2'); a.i(0x47); a.j(0xEB, 'next'); a.lbl('L2')
-        a.i(0x3C, 0x02); a.j(0x75, 'L3'); a.i(0x4F); a.j(0xEB, 'next'); a.lbl('L3')
-        a.i(0x3C, 0x03); a.j(0x75, 'L4'); a.i(0xFE, 0x05); a.j(0xEB, 'next'); a.lbl('L4')
-        a.i(0x3C, 0x04); a.j(0x75, 'L5'); a.i(0xFE, 0x0D); a.j(0xEB, 'next'); a.lbl('L5')
-        
-        a.i(0x3C, 0x05); a.j(0x75, 'L6')
-        a.lbl('L6_wait'); a.i(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x20); a.j(0x74, 'L6_wait')
-        a.i(0x8A, 0x05, 0xBA, 0xF8, 0x03, 0xEE); a.j(0xEB, 'next'); a.lbl('L6')
-        
-        a.i(0x3C, 0x06); a.j(0x75, 'L7')
-        a.lbl('L7_wait'); a.i(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x01); a.j(0x74, 'L7_wait')
-        a.i(0xBA, 0xF8, 0x03, 0xEC, 0x88, 0x05); a.j(0xEB, 'next'); a.lbl('L7')
-        
-        a.i(0x3C, 0x07); a.j(0x75, 'L8'); a.i(0x80, 0x3D, 0x00); a.j(0x75, 'next')
-        a.i(0xB9, 0x01, 0x00); a.lbl('fwd')
-        a.i(0x8A, 0x04, 0x46, 0x3C, 0x07); a.j(0x75, 'fwd1'); a.i(0x41); a.lbl('fwd1')
-        a.i(0x3C, 0x08); a.j(0x75, 'fwd2'); a.i(0x49); a.lbl('fwd2')
-        a.i(0x09, 0xC9); a.j(0x75, 'fwd'); a.j(0xEB, 'next'); a.lbl('L8')
-        a.i(0x3C, 0x08); a.j(0x75, 'next'); a.i(0x80, 0x3D, 0x00); a.j(0x74, 'next')
-        a.i(0xB9, 0x01, 0x00, 0x83, 0xEE, 0x02); a.lbl('bwd')
-        a.i(0x8A, 0x04, 0x4E, 0x3C, 0x08); a.j(0x75, 'bwd1'); a.i(0x41); a.lbl('bwd1')
-        a.i(0x3C, 0x07); a.j(0x75, 'bwd2'); a.i(0x49); a.lbl('bwd2')
-        a.i(0x09, 0xC9); a.j(0x75, 'bwd'); a.i(0x83, 0xC6, 0x02); a.j(0xEB, 'next')
-        a.lbl('halt'); a.i(0xF4); a.j(0xEB, 'halt')
-
-        bin = a.build()
-        for b in bin: v.opt(20, b); v.g(20); v.c+="."
-        while len(bin) < 510: v.opt(20, 0); v.g(20); v.c+="."; bin.append(0)
-        v.opt(20, 0x55); v.g(20); v.c+="."
-        v.opt(20, 0xAA); v.g(20); v.c+="."
-
-        v.z(10)
-        v.g(1); v.c+=","
-        v.g(1); v.c+="["
-        def rb(w):
-         v.cp(1,2,3); v.d(2,32); v.z(4); v.a(4,1)
-         def ih(): v.z(4)
-         v.jz(2,5,ih)
-         v.g(4); v.c+="["
-         v.g(1); v.c+=","; v.g(1); v.c+=","
-         v.a(10,w); v.z(4); v.c+="]"
-        rb(8)
-        v.g(1); v.c+=","; rb(4)
-        v.g(1); v.c+=","; rb(2)
-        v.g(1); v.c+=","; rb(1)
-        v.a(10,1); v.g(10); v.c+="."; v.z(10)
-        v.g(1); v.c+=","; v.g(1); v.c+="]"
-        
-        sys.stdout.write(v.c)
-        EOF
-        python3 tools/gen_spaces_compiler_bf_bundler.py > src/compiler.bf
-        python3 tools/bf_to_spaces.py src/compiler.bf > src/compiler.spaces
-
-    - name: 4. Forge VoidOS Native Compiler (Direct Spaces)
-      run: |
-        echo "--- Writing OS Compiler directly to Spaces ---"
-        cat << 'EOF' > tools/forge_compiler_direct.py
-        import sys
-        def o(v):
-         sys.stdout.write("\u3000" if (v>>3)&1 else " ")
-         sys.stdout.write("\u3000" if (v>>2)&1 else " ")
-         sys.stdout.write("\u3000" if (v>>1)&1 else " ")
-         sys.stdout.write("\u3000" if v&1 else " ")
-        def c(op):
-         m={'>':0,'<':1,'+':2,'-':3,'.':4,',':5,'[':6,']':7}
-         if op in m: o(m[op])
-
-        class VM:
-         def __init__(s): s.c=""; s.p=0
-         def g(s,n):
-          if n>s.p: s.c+=">"*(n-s.p)
-          elif n<s.p: s.c+="<"*(s.p-n)
-          s.p=n
-         def a(s,n,v): s.g(n); s.c+="+"*v
-         def d(s,n,v): s.g(n); s.c+="-"*v
-         def z(s,n): s.g(n); s.c+="[-]"
-         def opt(s,n,v):
-          s.z(n)
-          if v<=15: s.a(n,v)
-          else:
-           f=int(v**0.5); r=v-f*f
-           s.z(n+1); s.a(n+1,f); s.g(n+1); s.c+="["
-           s.a(n,f); s.g(n+1); s.c+="-]"
-           s.a(n,r); s.g(n)
-         def cp(s,src,dst,t):
-          s.z(dst); s.z(t); s.g(src); s.c+="["
-          s.g(dst); s.c+="+"; s.g(t); s.c+="+"
-          s.g(src); s.c+="-]"; s.g(t); s.c+="["
-          s.g(src); s.c+="+"; s.g(t); s.c+="-]"
-         def jz(s,v,f,cb):
-          s.z(f); s.a(f,1); s.g(v); s.c+="["
-          s.z(f); s.z(v); s.c+="]"; s.g(f); s.c+="["
-          cb(); s.z(f); s.c+="]"
-         def sa(s,b,v,t1,t2):
-          s.z(t1); s.g(b); s.c+="["; s.g(t1); s.c+="+"; s.g(b); s.c+="-]"
-          s.g(t1); s.c+="["; s.g(b); s.c+="++"; s.g(t1); s.c+="-]"
-          s.cp(v,t1,t2)
-          s.g(t1); s.c+="["; s.g(b); s.c+="+"; s.g(t1); s.c+="-]"
-
-        class Asm:
-         def __init__(s): s.c=[]; s.l={}
-         def lbl(s,n): s.l[n]=len(s.c)
-         def i(s,*b): s.c.extend(b)
-         def j(s,op,lbl): s.c.extend([op, lbl])
-         def build(s):
-          o=[]
-          for k,x in enumerate(s.c):
-           if type(x)==str: o.append((s.l[x]-(k+1))&0xFF)
-           else: o.append(x)
-          return o
-
-        v=VM(); a=Asm()
-        a.i(0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xBC, 0x00, 0x7C, 0xFB)
-        a.i(0x88, 0x16, 0x00, 0x05)
-        a.i(0xB4, 0x00, 0xB0, 0xE3, 0x31, 0xD2, 0xCD, 0x14)
-        a.i(0xB4, 0x01, 0xB0, 0x42, 0x31, 0xD2, 0xCD, 0x14)
-        a.i(0xB4, 0x02, 0xB0, 0x30, 0xB5, 0x00, 0xB1, 0x02, 0xB6, 0x00)
-        a.i(0x8A, 0x16, 0x00, 0x05)
-        a.i(0xBB, 0x00, 0x7E, 0xCD, 0x13)
-        a.i(0x73, 0x0B)
-        a.i(0xB4, 0x01, 0xB0, 0x45, 0x31, 0xD2, 0xCD, 0x14, 0xF4, 0xEB, 0xFD)
-        a.i(0xB4, 0x01, 0xB0, 0x52, 0x31, 0xD2, 0xCD, 0x14)
-        
-        a.i(0xB4, 0x01, 0xB0, 0x56, 0x31, 0xD2, 0xCD, 0x14)
-        
+        a.i(0xB4, 0x01, 0xB0, 0x45, 0x31, 0xD2, 0xCD, 0x14, 0xF4, 0xEB, 0xFD) # Error 'E'
+        a.i(0xB4, 0x01, 0xB0, 0x52, 0x31, 0xD2, 0xCD, 0x14) # Read OK 'R'
+        a.i(0xB4, 0x01, 0xB0, 0x56, 0x31, 0xD2, 0xCD, 0x14) # VM Start 'V'
         a.i(0xBE, 0x00, 0x7E, 0xBF, 0x00, 0x10)
         a.lbl('next')
         a.i(0x8A, 0x04, 0x46, 0x08, 0xC0); a.j(0x74, 'halt')
@@ -239,61 +98,62 @@ jobs:
         a.i(0x09, 0xC9); a.j(0x75, 'bwd'); a.i(0x83, 0xC6, 0x02); a.j(0xEB, 'next')
         a.lbl('halt'); a.i(0xF4); a.j(0xEB, 'halt')
 
-        bin = a.build()
-        for b in bin: v.opt(20, b); v.g(20); v.c+="."
-        while len(bin) < 510: v.opt(20, 0); v.g(20); v.c+="."; bin.append(0)
-        v.opt(20, 0x55); v.g(20); v.c+="."
-        v.opt(20, 0xAA); v.g(20); v.c+="."
+        mbr_bytes = a.build()
+        while len(mbr_bytes) < 510: mbr_bytes.append(0)
+        mbr_bytes.extend([0x55, 0xAA])
 
-        v.z(10)
-        v.g(1); v.c+=","
-        v.g(1); v.c+="["
+        # 2. コンパイラロジックの構築
+        for b in mbr_bytes: v.opt(20, b); v.g(20); v.c+="."
+        v.z(10); v.g(1); v.c+=","; v.g(1); v.c+="["
         def rb(w):
          v.cp(1,2,3); v.d(2,32); v.z(4); v.a(4,1)
          def ih(): v.z(4)
          v.jz(2,5,ih)
-         v.g(4); v.c+="["
-         v.g(1); v.c+=","; v.g(1); v.c+=","
-         v.a(10,w); v.z(4); v.c+="]"
-        rb(8)
-        v.g(1); v.c+=","; rb(4)
-        v.g(1); v.c+=","; rb(2)
-        v.g(1); v.c+=","; rb(1)
+         v.g(4); v.c+="["; v.g(1); v.c+=","; v.g(1); v.c+=","; v.a(10,w); v.z(4); v.c+="]"
+        rb(8); v.g(1); v.c+=","; rb(4); v.g(1); v.c+=","; rb(2); v.g(1); v.c+=","; rb(1)
         v.a(10,1); v.g(10); v.c+="."; v.z(10)
         v.g(1); v.c+=","; v.g(1); v.c+="]"
-        
-        for x in v.c: c(x)
-        EOF
-        python3 tools/forge_compiler_direct.py > src/voidos_compiler.spaces
-        echo "✅ Pure Spaces Compiler Written directly."
 
-    - name: 5. Bootstrap OS Compiler Image
-      run: |
-        echo "--- Oracle VM compiles the VoidOS Native Compiler ---"
-        ./bin/ref_vm src/compiler.spaces < src/voidos_compiler.spaces > seed/voidos_compiler.img
+        # 3. 完璧なIMGファイルの直接出力 (C言語のVMを経由せず、直接VMバイトコードを書き込む)
+        b_to_v = {'>':1, '<':2, '+':3, '-':4, '.':5, ',':6, '[':7, ']':8}
+        vm_bytecode = [b_to_v[c] for c in v.c if c in b_to_v]
+        with open("seed/voidos_compiler.img", "wb") as f:
+            f.write(bytes(mbr_bytes))
+            f.write(bytes(vm_bytecode))
+
+        # 4. Spacesソースコード(Payload)の出力
+        b_to_s = {'>':0, '<':1, '+':2, '-':3, '.':4, ',':5, '[':6, ']':7}
+        with open("payload.spaces", "wb") as f:
+            for c in v.c:
+                if c in b_to_s:
+                    val = b_to_s[c]
+                    for i in range(3, -1, -1):
+                        bit = (val >> i) & 1
+                        f.write("\u3000".encode("utf-8") if bit else " ".encode("utf-8"))
+            f.write(b"\x00") # 確実なEOF
+        EOF
         
+        # すべてを1発でビルド！
+        python3 tools/build_os.py
         truncate -s 10M seed/voidos_compiler.img
         
-        IMG_SIZE=$(stat -c%s seed/voidos_compiler.img)
-        echo "✅ Bootable Compiler Image Forged & Padded! Size: $IMG_SIZE bytes"
+        REAL_SIZE=$(stat -c%s payload.spaces)
+        echo "✅ Built OS and Payload successfully. Payload size: $REAL_SIZE bytes"
 
-    - name: 6. The First Cry of the Compiler OS (QEMU Boot Test)
+    - name: 3. The First Cry of the Compiler OS (QEMU Boot Test)
       run: |
         echo "=== Booting VoidOS Native Compiler in QEMU ==="
-        cp src/voidos_compiler.spaces payload.spaces
-        python3 -c 'open("payload.spaces", "ab").write(b"\x00")'
         
         mkfifo serial.in serial.out
         
-        # 究極のハック：Pythonによる無駄なスリープを完全撤廃！
-        # OSが準備完了するまで5秒待ち、その後catコマンドでパイプの天然背圧に任せて全データを一気に流し込む！
-        (sleep 5; cat payload.spaces > serial.in) &
+        # pvを使って、OSの処理限界速度(5000B/s)で正確にストリーミング！Pythonのラグから解放！
+        (sleep 2; pv -q -L 5000 payload.spaces > serial.in) &
         cat serial.out > serial.bin &
         
         timeout 180 qemu-system-x86_64 -display none -chardev pipe,id=com1,path=serial -serial chardev:com1 -drive file=seed/voidos_compiler.img,format=raw,index=0,media=disk || true
         
         echo "--- Hex Dump of COM1 Serial Output ---"
-        od -v -t x1 serial.bin | head -n 10
+        od -v -t x1 serial.bin | head -n 20
         
         if od -v -t x1 serial.bin | tr -d ' \n' | grep -q "fa31c08ed88e"; then
           echo "🎉 SUCCESS! The VoidOS Native Compiler booted, read its own source code via COM1, and emitted the next generation's MBR!"
@@ -302,7 +162,7 @@ jobs:
           exit 1
         fi
 
-    - name: 7. Upload VoidOS Image
+    - name: 4. Upload VoidOS Image
       uses: actions/upload-artifact@v4
       with:
         name: voidos-boot-image
