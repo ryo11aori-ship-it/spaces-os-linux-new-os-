@@ -39,9 +39,12 @@ jobs:
 
             def resolve(self) -> bytes:
                 for pos, label, size in self.fixups:
+                    if label not in self.labels: raise KeyError(f"undefined: {label}")
                     target = self.labels[label]
                     if size == 8:
-                        self.buf[pos] = (target - (pos + 1)) & 0xFF
+                        rel = target - (pos + 1)
+                        if not -128 <= rel <= 127: raise ValueError("8bit branch out of bounds")
+                        self.buf[pos] = rel & 0xFF
                     elif size == 16:
                         rel = target - (pos + 2)
                         self.buf[pos] = rel & 0xFF; self.buf[pos+1] = (rel >> 8) & 0xFF
@@ -72,24 +75,24 @@ jobs:
                 0xBA, 0xFC, 0x03, 0xB0, 0x0B, 0xEE,
             )
 
-            # === REPL Start ===
+            # === REPL Start (ステータスチェック後に文字をセットするよう修正！) ===
             s.label("repl_start")
-            s.emit(0xB0, 0x3E)          # '>'
             s.label("wait_gt")
             s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x20)
             s.jcc8(0x74, "wait_gt")
+            s.emit(0xB0, 0x3E)          # '>' をセット
             s.emit(0xBA, 0xF8, 0x03, 0xEE)
             
-            s.emit(0xB0, 0x20)          # ' '
             s.label("wait_spc")
             s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x20)
             s.jcc8(0x74, "wait_spc")
+            s.emit(0xB0, 0x20)          # ' ' をセット
             s.emit(0xBA, 0xF8, 0x03, 0xEE)
 
             s.emit(0xBF, 0x00, 0x80)
             s.label("load_op")
             s.emit(0x31, 0xDB)
-            s.emit(0xB9, 0x03, 0x00)    # Linux版のSpaces仕様に合わせ「3ビット」読みに修正！
+            s.emit(0xB9, 0x03, 0x00)    # Linux版Spaces仕様の3ビット読みに対応
             
             s.label("read_char")
             s.label("wait_rx1")
@@ -136,17 +139,18 @@ jobs:
             s.emit(0x88, 0x1D, 0x47)
             s.jmp16("load_op")
 
+            # === REPLの改行処理 (ステータスチェック後に文字をセットするよう修正) ===
             s.label("vm_init")
-            s.emit(0xB0, 0x0D)
             s.label("wait_cr1")
             s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x20)
             s.jcc8(0x74, "wait_cr1")
+            s.emit(0xB0, 0x0D)          # \r
             s.emit(0xBA, 0xF8, 0x03, 0xEE)
 
-            s.emit(0xB0, 0x0A)
             s.label("wait_lf1")
             s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x20)
             s.jcc8(0x74, "wait_lf1")
+            s.emit(0xB0, 0x0A)          # \n
             s.emit(0xBA, 0xF8, 0x03, 0xEE)
 
             s.emit(0xB0, 0xFF, 0xAA)
@@ -162,16 +166,16 @@ jobs:
             s.emit(0x3C, 0xFF)
             s.jcc8(0x75, "continue_exec")
             
-            s.emit(0xB0, 0x0D)
             s.label("wait_cr2")
             s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x20)
             s.jcc8(0x74, "wait_cr2")
+            s.emit(0xB0, 0x0D)          # \r
             s.emit(0xBA, 0xF8, 0x03, 0xEE)
 
-            s.emit(0xB0, 0x0A)
             s.label("wait_lf2")
             s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x20)
             s.jcc8(0x74, "wait_lf2")
+            s.emit(0xB0, 0x0A)          # \n
             s.emit(0xBA, 0xF8, 0x03, 0xEE)
             
             s.jmp16("repl_start")
@@ -369,19 +373,18 @@ jobs:
         python3 tools/bf_to_spaces.py < compiler.bf > compiler.spaces
         python3 tools/spaces_to_bin.py < compiler.spaces > reference_compiler.bin
 
-        # The Stream: Boot (Compiler + \n) + Input (Compiler + \x00)
+        # ストリームの準備：REPL上でコンパイラ自身にコンパイラソースを食わせる
         cat compiler.spaces > payload_boot.spaces
-        echo -ne "\n" >> payload_boot.spaces
+        printf "\n" >> payload_boot.spaces
         cat compiler.spaces > payload_src.spaces
-        echo -ne "\x00" >> payload_src.spaces
+        printf "\0" >> payload_src.spaces
 
     - name: 4. The Absolute Void (Fixed-Point Proof on Bare Metal)
       run: |
         set -euo pipefail
         echo "=== Executing The Absolute Void ==="
 
-        # OSがコンパイラを起動(payload_boot)し、起動したコンパイラに自身のソース(payload_src)を食わせる！
-        # -L 1000 にして、VM上のVM（マトリョーシカ状態）の処理落ちを確実に防ぐ
+        # OSのREPLにコンパイラソースを流し込んで起動し、そのまま自己コンパイルさせる
         (sleep 2; pv -q -L 1000 payload_boot.spaces; sleep 1; pv -q -L 1000 payload_src.spaces) | timeout 180 qemu-system-x86_64 \
           -display none \
           -serial stdio \
@@ -391,14 +394,18 @@ jobs:
         echo "--- Hex Dump of COM1 Serial Output ---"
         od -v -t x1 serial.bin | head -n 30
 
-        # Pythonスクリプトで、REPLのプロンプト(>\r\n\n)に挟まれた「純粋なコンパイル結果」だけを抽出する
+        # REPLのプロンプト(> \r\n) と 終了プロンプト(\r\n> ) の間に挟まれた、純粋なコンパイル結果だけを抽出！
         cat << 'EOF' > tools/extract_bin.py
         import sys
         data = open("serial.bin", "rb").read()
-        start = data.find(b"\r\n\n") + 3
-        end = data.rfind(b"\r\n\n> ")
-        if start < 3 or end == -1 or start >= end:
-            print("❌ FAILED to find execution bounds in serial.bin")
+        start = data.find(b"> \r\n")
+        if start == -1:
+            print("❌ FAILED to find start sequence in serial.bin")
+            sys.exit(1)
+        start += 4
+        end = data.rfind(b"\r\n> ")
+        if end == -1 or start >= end:
+            print("❌ FAILED to find end sequence in serial.bin")
             sys.exit(1)
         open("voidos_compiled.bin", "wb").write(data[start:end])
         EOF
