@@ -14,7 +14,7 @@ jobs:
         sudo apt-get update
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-x86 python3 pv
 
-    - name: 2. Build VoidOS Architecture (REPL OS)
+    - name: 2. Build VoidOS REPL Architecture
       run: |
         set -euo pipefail
         echo "--- Building Spaces REPL OS directly ---"
@@ -90,7 +90,7 @@ jobs:
                 0xBA, 0xFC, 0x03, 0xB0, 0x0B, 0xEE,
             )
 
-            # === REPL Start: プロンプト "> " の出力 ===
+            # === REPL Start ===
             s.label("repl_start")
             s.emit(0xB0, 0x3E)          # '>'
             s.label("wait_gt")
@@ -104,12 +104,10 @@ jobs:
             s.jcc8(0x74, "wait_spc")
             s.emit(0xBA, 0xF8, 0x03, 0xEE)
 
-            # === Phase 1: Spaces UTF-8 Decoder & Loader ===
-            s.emit(0xBF, 0x00, 0x80)    # di = 0x8000
-            
+            s.emit(0xBF, 0x00, 0x80)
             s.label("load_op")
-            s.emit(0x31, 0xDB)          # bx = 0
-            s.emit(0xB9, 0x04, 0x00)    # cx = 4
+            s.emit(0x31, 0xDB)
+            s.emit(0xB9, 0x04, 0x00)
             
             s.label("read_char")
             s.label("wait_rx1")
@@ -117,7 +115,6 @@ jobs:
             s.jcc8(0x74, "wait_rx1")
             s.emit(0xBA, 0xF8, 0x03, 0xEC)
             
-            # 【REPLハック】改行(\n) または EOF(\0) が来たら実行開始！
             s.emit(0x3C, 0x0A)          # \n ?
             s.jcc8(0x74, "do_vm_init")
             s.emit(0x3C, 0x0D)          # \r ?
@@ -129,10 +126,10 @@ jobs:
             s.jmp16("vm_init")
             
             s.label("chk_half")
-            s.emit(0x3C, 0x20)          # Half space?
+            s.emit(0x3C, 0x20)
             s.jcc8(0x74, "bit_zero")
-            s.emit(0x3C, 0xE3)          # Full space?
-            s.jcc8(0x75, "read_char")   # Ignore invalid chars
+            s.emit(0x3C, 0xE3)
+            s.jcc8(0x75, "read_char")
             
             s.label("wait_rx2")
             s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x01)
@@ -143,24 +140,21 @@ jobs:
             s.jcc8(0x74, "wait_rx3")
             s.emit(0xBA, 0xF8, 0x03, 0xEC)
             
-            s.emit(0xD1, 0xE3)          # shl bx, 1
-            s.emit(0x83, 0xCB, 0x01)    # or bx, 1
+            s.emit(0xD1, 0xE3)
+            s.emit(0x83, 0xCB, 0x01)
             s.jmp8("bit_done")
             
             s.label("bit_zero")
-            s.emit(0xD1, 0xE3)          # shl bx, 1
+            s.emit(0xD1, 0xE3)
             
             s.label("bit_done")
             s.emit(0x49, 0x09, 0xC9)
             s.jcc8(0x75, "read_char")
             
-            s.emit(0x88, 0x1D, 0x47)    # mov [di], bl; inc di
+            s.emit(0x88, 0x1D, 0x47)
             s.jmp16("load_op")
 
-            # === Phase 2: VM Initialization ===
             s.label("vm_init")
-            
-            # 見た目を綺麗にするため、実行前に改行を出力
             s.emit(0xB0, 0x0D)
             s.label("wait_cr1")
             s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x20)
@@ -173,24 +167,19 @@ jobs:
             s.jcc8(0x74, "wait_lf1")
             s.emit(0xBA, 0xF8, 0x03, 0xEE)
 
-            s.emit(0xB0, 0xFF, 0xAA)    # Null-terminate code with 0xFF
-            
-            # Clear Tape (0x1000 ~ 0x3FFF)
+            s.emit(0xB0, 0xFF, 0xAA)
             s.emit(0xBF, 0x00, 0x10)
             s.emit(0xB9, 0x00, 0x30)
             s.emit(0x31, 0xC0)
             s.emit(0xF3, 0xAA)
-            
-            s.emit(0xBE, 0x00, 0x80)    # si = 0x8000
-            s.emit(0xBD, 0x00, 0x10)    # bp = 0x1000
+            s.emit(0xBE, 0x00, 0x80)
+            s.emit(0xBD, 0x00, 0x10)
 
-            # === Phase 3: Fetch & Execute Loop ===
             s.label("fetch")
-            s.emit(0x8A, 0x04, 0x46)    # al = [si], inc si
-            s.emit(0x3C, 0xFF)          # End of code?
+            s.emit(0x8A, 0x04, 0x46)
+            s.emit(0x3C, 0xFF)
             s.jcc8(0x75, "continue_exec")
             
-            # 【REPLハック】実行終了時、haltせずに改行を出力してrepl_startへ飛ぶ！
             s.emit(0xB0, 0x0D)
             s.label("wait_cr2")
             s.emit(0xBA, 0xFD, 0x03, 0xEC, 0xA8, 0x20)
@@ -203,37 +192,32 @@ jobs:
             s.jcc8(0x74, "wait_lf2")
             s.emit(0xBA, 0xF8, 0x03, 0xEE)
             
-            s.jmp16("repl_start")       # 輪廻転生！！
+            s.jmp16("repl_start")
             
             s.label("continue_exec")
-            # 0: '>'
             s.emit(0x3C, 0x00)
             s.jcc8(0x75, "chk_1")
             s.emit(0x45)
             s.jmp16("fetch")
             
-            # 1: '<'
             s.label("chk_1")
             s.emit(0x3C, 0x01)
             s.jcc8(0x75, "chk_2")
             s.emit(0x4D)
             s.jmp16("fetch")
             
-            # 2: '+'
             s.label("chk_2")
             s.emit(0x3C, 0x02)
             s.jcc8(0x75, "chk_3")
             s.emit(0x3E, 0xFE, 0x46, 0x00)
             s.jmp16("fetch")
             
-            # 3: '-'
             s.label("chk_3")
             s.emit(0x3C, 0x03)
             s.jcc8(0x75, "chk_4")
             s.emit(0x3E, 0xFE, 0x4E, 0x00)
             s.jmp16("fetch")
             
-            # 4: '.'
             s.label("chk_4")
             s.emit(0x3C, 0x04)
             s.jcc8(0x75, "chk_5")
@@ -243,7 +227,6 @@ jobs:
             s.emit(0xBA, 0xF8, 0x03, 0x3E, 0x8A, 0x46, 0x00, 0xEE)
             s.jmp16("fetch")
             
-            # 5: ','
             s.label("chk_5")
             s.emit(0x3C, 0x05)
             s.jcc8(0x75, "chk_6")
@@ -253,7 +236,6 @@ jobs:
             s.emit(0xBA, 0xF8, 0x03, 0xEC, 0x3E, 0x88, 0x46, 0x00)
             s.jmp16("fetch")
             
-            # 6: '['
             s.label("chk_6")
             s.emit(0x3C, 0x06)
             s.jcc8(0x75, "chk_7")
@@ -275,7 +257,6 @@ jobs:
             s.label("fwd_done")
             s.jmp16("fetch")
             
-            # 7: ']'
             s.label("chk_7")
             s.emit(0x3C, 0x07)
             s.jcc8(0x75, "fetch_jmp")
@@ -305,31 +286,9 @@ jobs:
         def main() -> None:
             mbr = build_mbr()
             stage2 = build_stage2()
-
             img = mbr + stage2
             Path("seed/voidos_compiler.img").write_bytes(img)
             Path("seed/voidos_compiler.img").write_bytes(img.ljust(10 * 1024 * 1024, b'\x00'))
-
-            # Aを出力するプログラムと、Bを出力するプログラムを2つ用意！
-            bf1 = "++++++[>++++++++++<-]>+++++."
-            bf2 = "++++++[>++++++++++<-]>++++++."
-            
-            def to_spaces(bf):
-                b_to_s = {'>':0, '<':1, '+':2, '-':3, '.':4, ',':5, '[':6, ']':7}
-                bits = []
-                for c in bf:
-                    if c in b_to_s:
-                        val = b_to_s[c]
-                        bits.extend([(val >> 3) & 1, (val >> 2) & 1, (val >> 1) & 1, val & 1])
-                out = bytearray()
-                for bit in bits:
-                    out.extend("\u3000".encode("utf-8") if bit else " ".encode("utf-8"))
-                return bytes(out)
-            
-            # 各プログラムの末尾に「改行(\n)」を付与して保存
-            Path("payload1.spaces").write_bytes(to_spaces(bf1) + b"\n")
-            Path("payload2.spaces").write_bytes(to_spaces(bf2) + b"\n")
-
             print(f"MBR size: {len(mbr)}")
             print(f"Stage2 size: {len(stage2)}")
 
@@ -339,33 +298,98 @@ jobs:
 
         python3 tools/build_os.py
 
-    - name: 3. The Interactive Void (QEMU Boot Test)
+    - name: 3. Forge Native VoidOS Compiler (Spaces -> Bytecode)
+      run: |
+        echo "--- Building VoidOS Compiler in Spaces ---"
+        cat << 'EOF' > tools/build_compiler.py
+        import sys
+        from pathlib import Path
+
+        class VM:
+            def __init__(self): self.c=""; self.p=0
+            def g(self,n):
+                if n>self.p: self.c+=">"*(n-self.p)
+                elif n<self.p: self.c+="<"*(self.p-n)
+                self.p=n
+            def a(self,n,v): self.g(n); self.c+="+"*v
+            def d(self,n,v): self.g(n); self.c+="-"*v
+            def z(self,n): self.g(n); self.c+="[-]"
+            def cp(self,src,dst,t):
+                self.z(dst); self.z(t); self.g(src); self.c+="["
+                self.g(dst); self.c+="+"; self.g(t); self.c+="+"
+                self.g(src); self.c+="-]"; self.g(t); self.c+="["
+                self.g(src); self.c+="+"; self.g(t); self.c+="-]"
+            def jz(self,v,f,cb):
+                self.z(f); self.a(f,1); self.g(v); self.c+="["
+                self.z(f); self.z(v); self.c+="]"; self.g(f); self.c+="["
+                cb(); self.z(f); self.c+="]"
+
+        v=VM()
+        
+        # コンパイラのメインループ：1文字読んで、ASTに一致したら対応するバイトコード(0x00~0x07)を出力する
+        v.g(1); v.c+=",["
+        def chk(c_val, o_val):
+            v.cp(1, 2, 3); v.d(2, c_val)
+            def match():
+                v.z(4); v.a(4, o_val); v.g(4); v.c+="."
+            v.jz(2, 5, match)
+
+        chk(62, 0) # >
+        chk(60, 1) # <
+        chk(43, 2) # +
+        chk(45, 3) # -
+        chk(46, 4) # .
+        chk(44, 5) # ,
+        chk(91, 6) # [
+        chk(93, 7) # ]
+        v.z(1); v.g(1); v.c+=",]"
+
+        b_to_s = {'>':0, '<':1, '+':2, '-':3, '.':4, ',':5, '[':6, ']':7}
+        bits = []
+        for c in v.c:
+            if c in b_to_s:
+                val = b_to_s[c]
+                bits.extend([(val >> 3) & 1, (val >> 2) & 1, (val >> 1) & 1, val & 1])
+
+        out = bytearray()
+        for bit in bits:
+            out.extend(b"\xe3\x80\x80" if bit else b" ")
+        
+        # 1. まず「Spacesコンパイラ自身」をREPLでコンパイルさせるための改行トリガー
+        out.extend(b"\n")
+        # 2. 次に、OS上で稼働を始めたコンパイラに食わせる「ターゲットプログラム (+[-].) 」
+        out.extend(b"+[-].\x00")
+        
+        Path("payload.bin").write_bytes(out)
+        EOF
+        
+        python3 tools/build_compiler.py
+        
+    - name: 4. The Absolute Void (Self-Hosting Stream)
       run: |
         set -euo pipefail
-        echo "=== Booting VoidOS REPL in QEMU ==="
+        echo "=== Executing The Absolute Void ==="
 
-        # OSが準備完了するまで2秒待ち、payload1(Aを出力)を流す。
-        # OSがそれを実行し終えるまで1秒待ってから、payload2(Bを出力)を流す！
-        (sleep 2; cat payload1.spaces; sleep 1; cat payload2.spaces) | timeout 180 qemu-system-x86_64 \
+        # OSが準備完了するまで2秒待ち、結合された完全なストリームを流し込む！
+        (sleep 2; pv -q -L 5000 payload.bin) | timeout 180 qemu-system-x86_64 \
           -display none \
           -serial stdio \
           -drive file=seed/voidos_compiler.img,format=raw,index=0,media=disk \
           > serial.bin || true
 
-        echo "--- Hex Dump & Text of COM1 Serial Output ---"
+        echo "--- Hex Dump of COM1 Serial Output ---"
         ls -l serial.bin
-        od -v -t c serial.bin | head -n 30
-        cat serial.bin
+        od -v -t x1 serial.bin | head -n 30
 
-        # "A"と"B"の両方がログに含まれていれば、REPLループ大成功！
-        if grep -q "A" serial.bin && grep -q "B" serial.bin; then
-          echo "🎉 SUCCESS! VoidOS is now an Interactive REPL OS!"
+        # OSが吐き出した16進数の中に、ターゲットプログラム (+[-].) をコンパイルしたバイトコード (0x02 0x06 0x03 0x07 0x04) が存在するかチェック！
+        if od -v -t x1 serial.bin | tr -d ' \n' | grep -q "0206030704"; then
+          echo "🎉 SUCCESS! The Spaces Compiler running on VoidOS successfully compiled the target program into VoidOS Bytecode!"
         else
-          echo "❌ FAILED: The REPL did not execute both payloads correctly."
+          echo "❌ FAILED: The VM did not output the correct bytecode."
           exit 1
         fi
 
-    - name: 4. Upload VoidOS Image
+    - name: 5. Upload VoidOS Image
       uses: actions/upload-artifact@v4
       with:
         name: voidos-boot-image
