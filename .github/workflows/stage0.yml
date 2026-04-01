@@ -437,3 +437,4 @@ jobs:
           *.log
           serial.bin
           *.bin
+          *.spaces
